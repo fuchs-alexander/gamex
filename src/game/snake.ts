@@ -50,21 +50,41 @@ export const wrapPoint = (point: Point, size: number): Point => ({
 export const spawnFood = (snake: Point[], size: number, rng: Rng): Point => {
   const occupied = new Set(snake.map(pointKey));
   const options: Point[] = [];
+  const safeOptions: Point[] = [];
 
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      if (!occupied.has(`${x},${y}`)) {
-        options.push({ x, y });
+      const key = `${x},${y}`;
+      if (!occupied.has(key)) {
+        const point = { x, y };
+        options.push(point);
+        let exits = 0;
+        const neighbors = [
+          wrapPoint({ x: x + 1, y }, size),
+          wrapPoint({ x: x - 1, y }, size),
+          wrapPoint({ x, y: y + 1 }, size),
+          wrapPoint({ x, y: y - 1 }, size)
+        ];
+        for (const neighbor of neighbors) {
+          if (!occupied.has(pointKey(neighbor))) {
+            exits += 1;
+          }
+        }
+        if (exits >= 2) {
+          safeOptions.push(point);
+        }
       }
     }
   }
 
-  if (options.length === 0) {
+  const pool = safeOptions.length > 0 ? safeOptions : options;
+
+  if (pool.length === 0) {
     return { x: -1, y: -1 };
   }
 
-  const index = Math.floor(rng() * options.length);
-  return options[Math.min(index, options.length - 1)];
+  const index = Math.floor(rng() * pool.length);
+  return pool[Math.min(index, pool.length - 1)];
 };
 
 export const spawnObstacles = (

@@ -22,7 +22,8 @@ const SPEED_OPTIONS = [
   { value: 0.5, label: "0.5x" },
   { value: 1, label: "1x" },
   { value: 2, label: "2x" },
-  { value: 4, label: "4x" }
+  { value: 4, label: "4x" },
+  { value: 8, label: "8x" }
 ] as const;
 
 type PlayerConfig = {
@@ -303,7 +304,7 @@ export default function App() {
   );
   const [lapTimes, setLapTimes] = useState<LapTimes>(() => createLapTimes());
   const [endTimes, setEndTimes] = useState<EndTimes>(() => createEndTimes());
-  const [lastEatTimes, setLastEatTimes] = useState<Record<string, number>>(() =>
+  const lastEatTimesRef = useRef<Record<string, number>>(
     PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
       acc[id] = 0;
       return acc;
@@ -386,12 +387,10 @@ export default function App() {
     setStarted(true);
     setLapTimes(createLapTimes());
     setEndTimes(createEndTimes());
-    setLastEatTimes(
-      PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
-        acc[id] = now;
-        return acc;
-      }, {})
-    );
+    lastEatTimesRef.current = PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
+      acc[id] = now;
+      return acc;
+    }, {});
 
     setMatch((current) => {
       if (allGameover) {
@@ -430,19 +429,17 @@ export default function App() {
           return acc;
         }, {} as MatchState);
 
-        setLastEatTimes((prev) => {
-          const next = { ...prev };
-          for (const playerId of PLAYER_IDS) {
-            if (nextState[playerId].fruitsEaten > current[playerId].fruitsEaten) {
-              next[playerId] = now;
-            }
+        const nextLastEat = { ...lastEatTimesRef.current };
+        for (const playerId of PLAYER_IDS) {
+          if (nextState[playerId].fruitsEaten > current[playerId].fruitsEaten) {
+            nextLastEat[playerId] = now;
           }
-          return next;
-        });
+        }
+        lastEatTimesRef.current = nextLastEat;
 
         for (const playerId of PLAYER_IDS) {
           if (nextState[playerId].fruitsEaten > current[playerId].fruitsEaten) {
-            const lastEat = lastEatTimes[playerId] ?? now;
+            const lastEat = lastEatTimesRef.current[playerId] ?? now;
             const elapsed = Math.max(0, now - lastEat);
             const maxPoints = 30;
             const tau = 7000;
@@ -481,10 +478,8 @@ export default function App() {
           let changed = false;
           const next = { ...prev };
           for (const playerId of PLAYER_IDS) {
-            if (
-              next[playerId] === null &&
-              now - (lastEatTimes[playerId] ?? now) >= 30000
-            ) {
+            const lastEat = lastEatTimesRef.current[playerId] ?? now;
+            if (next[playerId] === null && now - lastEat >= 30000) {
               nextState[playerId] = { ...nextState[playerId], status: "gameover" };
               next[playerId] = now - matchStartRef.current;
               changed = true;
@@ -503,7 +498,7 @@ export default function App() {
     }, interval);
 
     return () => window.clearInterval(timer);
-  }, [lastEatTimes, manualEnabled, running, speed, strategies]);
+  }, [manualEnabled, running, speed, strategies]);
 
   useEffect(() => {
     if (!started || !manualEnabled) {
