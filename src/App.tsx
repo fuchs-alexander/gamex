@@ -310,7 +310,6 @@ export default function App() {
     }, {})
   );
   const [started, setStarted] = useState(false);
-  const [tickNow, setTickNow] = useState(0);
   const [speed, setSpeed] = useState(1);
   const [manualEnabled, setManualEnabled] = useState(false);
   const matchStartRef = useRef<number>(0);
@@ -335,7 +334,11 @@ export default function App() {
   const standings = useMemo<StandingEntry[]>(() => {
     const entries = PLAYERS.map((player) => {
       const strategy = strategies[player.id] ?? player.defaultStrategy;
-      const lastLapTotalMs = lapTimes[player.id]?.at(-1)?.totalMs ?? null;
+      const playerLaps = lapTimes[player.id];
+      const lastLapTotalMs =
+        playerLaps && playerLaps.length > 0
+          ? playerLaps[playerLaps.length - 1].totalMs
+          : null;
       const lap = lapTimes[player.id]?.length ?? 0;
       const displayMs = lastLapTotalMs ?? endTimes[player.id] ?? null;
       const totalMs = displayMs ?? Number.POSITIVE_INFINITY;
@@ -379,7 +382,6 @@ export default function App() {
 
     const now = 0;
     simTimeRef.current = 0;
-    setTickNow(now);
     matchStartRef.current = now;
     setStarted(true);
     setLapTimes(createLapTimes());
@@ -420,7 +422,6 @@ export default function App() {
       const delta = interval * speed;
       const now = simTimeRef.current + delta;
       simTimeRef.current = now;
-      setTickNow(now);
       setMatch((current) => {
         const nextState = PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
           const strategy = strategies[playerId] ?? DEFAULT_STRATEGIES[playerId];
