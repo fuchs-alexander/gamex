@@ -15,6 +15,8 @@ export type GameState = {
   score: number;
   fruitsEaten: number;
   status: GameStatus;
+  timeSinceLastFruit?: number;
+  timeoutMs?: number;
 };
 
 export type Rng = () => number;
@@ -46,6 +48,65 @@ export const wrapPoint = (point: Point, size: number): Point => ({
   x: (point.x + size) % size,
   y: (point.y + size) % size
 });
+
+const orthogonalNeighbors = (point: Point, size: number): Point[] => [
+  wrapPoint({ x: point.x + 1, y: point.y }, size),
+  wrapPoint({ x: point.x - 1, y: point.y }, size),
+  wrapPoint({ x: point.x, y: point.y + 1 }, size),
+  wrapPoint({ x: point.x, y: point.y - 1 }, size)
+];
+
+const freeExitCount = (point: Point, occupied: Set<string>, size: number): number => {
+  let exits = 0;
+  for (const neighbor of orthogonalNeighbors(point, size)) {
+    if (!occupied.has(pointKey(neighbor))) {
+      exits += 1;
+    }
+  }
+  return exits;
+};
+
+const createsAdditionalDeadEnds = (
+  occupied: Set<string>,
+  candidate: Point,
+  size: number
+): boolean => {
+  const candidateKey = pointKey(candidate);
+  if (occupied.has(candidateKey)) {
+    return true;
+  }
+
+  // Local dead-end delta:
+  // adding an obstacle only changes dead-end state of candidate and direct neighbors.
+  let deadEndDelta = 0;
+
+  const candidateExitsBefore = freeExitCount(candidate, occupied, size);
+  if (candidateExitsBefore <= 1) {
+    deadEndDelta -= 1;
+  }
+
+  const seenNeighborKeys = new Set<string>();
+  for (const neighbor of orthogonalNeighbors(candidate, size)) {
+    const neighborKey = pointKey(neighbor);
+    if (seenNeighborKeys.has(neighborKey) || occupied.has(neighborKey)) {
+      continue;
+    }
+    seenNeighborKeys.add(neighborKey);
+
+    const exitsBefore = freeExitCount(neighbor, occupied, size);
+    const exitsAfter = Math.max(0, exitsBefore - 1);
+    const wasDeadEnd = exitsBefore <= 1;
+    const isDeadEnd = exitsAfter <= 1;
+
+    if (!wasDeadEnd && isDeadEnd) {
+      deadEndDelta += 1;
+    } else if (wasDeadEnd && !isDeadEnd) {
+      deadEndDelta -= 1;
+    }
+  }
+
+  return deadEndDelta > 0;
+};
 
 export const spawnFood = (snake: Point[], size: number, rng: Rng): Point => {
   const occupied = new Set(snake.map(pointKey));
@@ -98,25 +159,33 @@ export const spawnObstacles = (
   }
 
   const occupied = new Set(snake.map(pointKey));
-  const options: Point[] = [];
-
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const key = `${x},${y}`;
-      if (!occupied.has(key)) {
-        options.push({ x, y });
+  const obstacles: Point[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const options: Point[] = [];
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const key = `${x},${y}`;
+        if (!occupied.has(key)) {
+          options.push({ x, y });
+        }
       }
     }
-  }
 
-  const obstacles: Point[] = [];
-  let available = options;
-  for (let i = 0; i < count && available.length > 0; i += 1) {
-    const index = Math.floor(rng() * available.length);
-    const pick = available[Math.min(index, available.length - 1)];
+    if (options.length === 0) {
+      break;
+    }
+
+    const safeOptions = options.filter(
+      (point) => !createsAdditionalDeadEnds(occupied, point, size)
+    );
+    if (safeOptions.length === 0) {
+      break;
+    }
+
+    const index = Math.floor(rng() * safeOptions.length);
+    const pick = safeOptions[Math.min(index, safeOptions.length - 1)];
     obstacles.push(pick);
-    const pickKey = pointKey(pick);
-    available = available.filter((point) => pointKey(point) !== pickKey);
+    occupied.add(pointKey(pick));
   }
 
   return obstacles;
@@ -143,8 +212,15 @@ export const spawnObstacle = (
     return null;
   }
 
-  const index = Math.floor(rng() * options.length);
-  return options[Math.min(index, options.length - 1)];
+  const safeOptions = options.filter(
+    (point) => !createsAdditionalDeadEnds(occupied, point, size)
+  );
+  if (safeOptions.length === 0) {
+    return null;
+  }
+
+  const index = Math.floor(rng() * safeOptions.length);
+  return safeOptions[Math.min(index, safeOptions.length - 1)];
 };
 
 export const createInitialState = (

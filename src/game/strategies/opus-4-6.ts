@@ -7,63 +7,39 @@ import {
   type MoveEvaluation
 } from "./utils";
 
-const computeOccupiedRatio = (state: GameState, size: number): number => {
-  const totalCells = size * size;
-  const occupiedCells = state.snake.length + state.obstacles.length;
-  return occupiedCells / totalCells;
-};
-
-const scoreMove = (
+/**
+ * Path-first Scoring mit Toleranz-System.
+ * Primaer: Pfad-Delta zum kuerzesten safe Pfad.
+ * Toleranz steigt mit Belegung - innerhalb Toleranz zaehlt Space als Tiebreaker.
+ * Ausserhalb Toleranz: starke Pfad-Penalty, Space kaum relevant.
+ */
+const scoreSafeMove = (
   evaluation: MoveEvaluation,
-  maxPath: number,
+  minPath: number,
   maxSpace: number,
   occupiedRatio: number
 ): number => {
-  let pathWeight: number;
-  let spaceWeight: number;
-  let safetyBonus: number;
+  if (evaluation.pathLength === null) return -1;
 
-  if (occupiedRatio < 0.15) {
-    // Fruehes Spiel: aggressiv Futter jagen
-    pathWeight = 0.7;
-    spaceWeight = 0.2;
-    safetyBonus = 0.1;
-  } else if (occupiedRatio < 0.4) {
-    // Mittleres Spiel: ausgewogen
-    pathWeight = 0.35;
-    spaceWeight = 0.35;
-    safetyBonus = 0.3;
-  } else {
-    // Spaetes Spiel: defensiv, Platz sichern
-    pathWeight = 0.1;
-    spaceWeight = 0.5;
-    safetyBonus = 0.4;
+  const pathDelta = evaluation.pathLength - minPath;
+  const tolerance = occupiedRatio < 0.3 ? 2 : occupiedRatio < 0.5 ? 3 : 4;
+  const normSpace = maxSpace > 0 ? evaluation.space / maxSpace : 0;
+
+  if (pathDelta <= tolerance) {
+    return 1 - pathDelta * 0.15 + normSpace * 0.12;
   }
-
-  const normalizedPath =
-    evaluation.pathLength !== null && maxPath > 0
-      ? evaluation.pathLength / maxPath
-      : 1;
-
-  const normalizedSpace = maxSpace > 0 ? evaluation.space / maxSpace : 0;
-
-  let score =
-    pathWeight * (1 - normalizedPath) + spaceWeight * normalizedSpace;
-
-  if (evaluation.safe) {
-    score += safetyBonus;
-  }
-
-  return score;
+  return 1 - pathDelta * 0.3 + normSpace * 0.05;
 };
 
 export const pickOpus46Direction = (
   state: GameState,
   size: number
 ): Direction | null => {
-  const occupiedRatio = computeOccupiedRatio(state, size);
-  const foodReachable = isFoodReachable(state, size);
+  const totalCells = size * size;
+  const occupiedRatio =
+    (state.snake.length + state.obstacles.length) / totalCells;
 
+  // Alle gueltigen Zuege evaluieren
   const evaluations: MoveEvaluation[] = [];
   for (const dir of directions) {
     const evaluation = evaluateMove(state, size, dir);
@@ -76,56 +52,77 @@ export const pickOpus46Direction = (
     return directionToTail(state, size);
   }
 
-  // Bei unerreichbarem Futter: Platz maximieren
-  if (!foodReachable) {
+  // Sackgassen-Filter: Zuege vermeiden die weniger Platz bieten
+  // als die Schlange lang ist (= wird sich selbst einkesseln)
+  const minSpace = Math.max(Math.floor(state.snake.length * 0.3), 10);
+  const viable = evaluations.filter((e) => e.space >= minSpace);
+  const pool = viable.length > 0 ? viable : evaluations;
+
+  // Food unreachable: Schwanz jagen (schafft natuerlichen Zyklus, oeffnet Platz)
+  if (!isFoodReachable(state, size)) {
+    const tailDir = directionToTail(state, size);
+    if (tailDir && pool.some((e) => e.direction === tailDir)) {
+      return tailDir;
+    }
     let best: MoveEvaluation | null = null;
-    for (const evaluation of evaluations) {
-      if (!best || evaluation.space > best.space) {
-        best = evaluation;
+    for (const e of pool) {
+      if (!best || e.space > best.space) {
+        best = e;
       }
     }
-    return best?.direction ?? null;
+    return best?.direction ?? directionToTail(state, size);
   }
 
-  // Normalisierungswerte berechnen
-  let maxPath = 0;
-  let maxSpace = 0;
-  for (const evaluation of evaluations) {
-    if (evaluation.pathLength !== null && evaluation.pathLength > maxPath) {
-      maxPath = evaluation.pathLength;
-    }
-    if (evaluation.space > maxSpace) {
-      maxSpace = evaluation.space;
-    }
-  }
+  // IMMER safe > unsafe - kein Gambling auch nicht im fruehen Spiel
+  const safePool = pool.filter((e) => e.safe);
 
-  // Fruehes Spiel: auch unsafe Zuege akzeptieren wenn deutlich besser
-  if (occupiedRatio < 0.15) {
+  if (safePool.length > 0) {
+    // Normalisierung nur ueber safe Zuege
+    let minPath = Infinity;
+    let maxSpace = 0;
+    for (const e of safePool) {
+      if (e.pathLength !== null && e.pathLength < minPath) {
+        minPath = e.pathLength;
+      }
+      if (e.space > maxSpace) {
+        maxSpace = e.space;
+      }
+    }
+    if (minPath === Infinity) minPath = 1;
+
     let bestScore = -Infinity;
     let bestDir: Direction | null = null;
-    for (const evaluation of evaluations) {
-      const score = scoreMove(evaluation, maxPath, maxSpace, occupiedRatio);
+    for (const e of safePool) {
+      const score = scoreSafeMove(e, minPath, maxSpace, occupiedRatio);
       if (score > bestScore) {
         bestScore = score;
-        bestDir = evaluation.direction;
+        bestDir = e.direction;
       }
     }
     return bestDir;
   }
 
-  // Ab mittlerem Spiel: safe bevorzugen, unsafe nur als Fallback
-  const safeEvals = evaluations.filter((e) => e.safe);
-  const pool = safeEvals.length > 0 ? safeEvals : evaluations;
-
-  let bestScore = -Infinity;
-  let bestDir: Direction | null = null;
-  for (const evaluation of pool) {
-    const score = scoreMove(evaluation, maxPath, maxSpace, occupiedRatio);
-    if (score > bestScore) {
-      bestScore = score;
-      bestDir = evaluation.direction;
-    }
+  // Kein safe Zug: Ueberlebens-Modus - Kombination aus Pfad + Space
+  let maxUnsafeSpace = 0;
+  let maxUnsafePath = 0;
+  for (const e of pool) {
+    if (e.space > maxUnsafeSpace) maxUnsafeSpace = e.space;
+    if (e.pathLength !== null && e.pathLength > maxUnsafePath) maxUnsafePath = e.pathLength;
   }
 
-  return bestDir ?? directionToTail(state, size);
+  let bestUnsafeScore = -Infinity;
+  let bestUnsafe: MoveEvaluation | null = null;
+  for (const e of pool) {
+    const hasPath = e.pathLength !== null ? 0.4 : 0;
+    const normSpace = maxUnsafeSpace > 0 ? e.space / maxUnsafeSpace : 0;
+    const pathScore = e.pathLength !== null && maxUnsafePath > 1
+      ? 1 - (e.pathLength - 1) / (maxUnsafePath - 1)
+      : 0;
+    const score = hasPath + normSpace * 0.4 + pathScore * 0.2;
+    if (score > bestUnsafeScore) {
+      bestUnsafeScore = score;
+      bestUnsafe = e;
+    }
+  }
+  return bestUnsafe?.direction ?? directionToTail(state, size);
 };

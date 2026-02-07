@@ -7,23 +7,28 @@ import {
   type MoveEvaluation
 } from "./utils";
 
-const betterBySpaceAfterEatingThenPath = (
+const betterByPathThenSpace = (
   candidate: MoveEvaluation,
   current: MoveEvaluation | null
 ): boolean => {
   if (!current) {
     return true;
   }
-  if (candidate.space > current.space) {
+  
+  const candidatePathLength = candidate.pathLength ?? Number.POSITIVE_INFINITY;
+  const currentPathLength = current.pathLength ?? Number.POSITIVE_INFINITY;
+  
+  if (candidatePathLength < currentPathLength) {
     return true;
   }
+  
   if (
-    candidate.space === current.space &&
-    (candidate.pathLength ?? Number.POSITIVE_INFINITY) <
-      (current.pathLength ?? Number.POSITIVE_INFINITY)
+    candidatePathLength === currentPathLength &&
+    candidate.space > current.space
   ) {
     return true;
   }
+  
   return false;
 };
 
@@ -47,7 +52,7 @@ const betterBySpaceThenPath = (
   return false;
 };
 
-export const pickGenimiDirection = (
+export const pickGeminiDirection = (
   state: GameState,
   size: number
 ): Direction | null => {
@@ -73,7 +78,7 @@ export const pickGenimiDirection = (
     }
 
     if (evaluation.safe) {
-      if (betterBySpaceAfterEatingThenPath(evaluation, bestSafe)) {
+      if (betterByPathThenSpace(evaluation, bestSafe)) {
         bestSafe = evaluation;
       }
     } else if (betterBySpaceThenPath(evaluation, bestUnsafe)) {
