@@ -11,6 +11,7 @@ import { pickMimoDirection } from "./mimo";
 import { pickSonnet45Direction } from "./sonnet-4-5";
 import { pickFuchsDirection } from "./fuchs";
 import { pickMartinDirection } from "./martin";
+import { pickFuchs2Direction } from "./fuchs-2";
 
 export const STRATEGIES = [
   { id: "balanced", label: "Balanced" },
@@ -24,7 +25,8 @@ export const STRATEGIES = [
   { id: "mimo-v2-flash", label: "MIMO v2 Flash" },
   { id: "sonnet-4.5", label: "Sonnet 4.5" },
   { id: "fuchs", label: "Fuchs" },
-  { id: "martin", label: "Martin" }
+  { id: "martin", label: "Martin" },
+  { id: "fuchs-2", label: "Fuchs 2" }
 ] as const;
 
 export type AutopilotStrategy = (typeof STRATEGIES)[number]["id"];
@@ -52,7 +54,8 @@ const strategyMap: Record<
   "mimo-v2-flash": pickMimoDirection,
   "sonnet-4.5": pickSonnet45Direction,
   "fuchs": pickFuchsDirection,
-  "martin": pickMartinDirection
+  "martin": pickMartinDirection,
+  "fuchs-2": pickFuchs2Direction
 };
 
 export const pickAutopilotDirection = (

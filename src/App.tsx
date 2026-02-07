@@ -23,6 +23,8 @@ const TIMEOUT_MID_MS = 60000;
 const TIMEOUT_HIGH_MS = 120000;
 const TIMEOUT_MID_THRESHOLD = 200;
 const TIMEOUT_HIGH_THRESHOLD = 250;
+const SURVIVAL_POINT_INTERVAL_MS = 1000;
+const SURVIVAL_POINTS_PER_INTERVAL = 1;
 const SPEED_OPTIONS = [
   { value: 0.5, label: "0.5x" },
   { value: 1, label: "1x" },
@@ -332,6 +334,12 @@ export default function App() {
   );
   const [lapTimes, setLapTimes] = useState<LapTimes>(() => createLapTimes());
   const [endTimes, setEndTimes] = useState<EndTimes>(() => createEndTimes());
+  const survivalCarryRef = useRef<Record<string, number>>(
+    PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
+      acc[id] = 0;
+      return acc;
+    }, {})
+  );
   const [started, setStarted] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [manualEnabled, setManualEnabled] = useState(false);
@@ -425,6 +433,10 @@ export default function App() {
     setStarted(true);
     setLapTimes(createLapTimes());
     setEndTimes(createEndTimes());
+    survivalCarryRef.current = PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
+      acc[id] = 0;
+      return acc;
+    }, {});
 
     setMatch((current) => {
       const applyManualDirection = (state: GameState) => {
@@ -516,6 +528,26 @@ export default function App() {
             nextState[playerId] = { ...nextState[playerId], status: "gameover" };
           }
         }
+
+        const nextSurvivalCarry = { ...survivalCarryRef.current };
+        for (const playerId of PLAYER_IDS) {
+          if (nextState[playerId].status !== "running") {
+            nextSurvivalCarry[playerId] = 0;
+            continue;
+          }
+          const accumulatedMs = (nextSurvivalCarry[playerId] ?? 0) + delta;
+          const intervals = Math.floor(accumulatedMs / SURVIVAL_POINT_INTERVAL_MS);
+          nextSurvivalCarry[playerId] = accumulatedMs % SURVIVAL_POINT_INTERVAL_MS;
+          if (intervals > 0) {
+            nextState[playerId] = {
+              ...nextState[playerId],
+              score:
+                nextState[playerId].score +
+                intervals * SURVIVAL_POINTS_PER_INTERVAL
+            };
+          }
+        }
+        survivalCarryRef.current = nextSurvivalCarry;
 
         setLapTimes((prev) => {
           let changed = false;
