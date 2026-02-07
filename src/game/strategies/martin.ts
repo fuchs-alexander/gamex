@@ -100,30 +100,19 @@ export const pickMartinDirection = (
     score += normSpace * 3;
 
     // Border affinity (decreases with urgency)
-    if (urgency < 0.8) {
-      const borderWeight = Math.max(0, 1 - urgency * 1.25);
-      if (isOnBorder(nextHead, size)) {
-        score += 2.0 * borderWeight;
-        const clockwiseDir = borderClockwiseDirection(nextHead, size);
-        if (clockwiseDir === ev.direction) {
-          score += 1.5 * borderWeight;
-        }
+    const borderWeight = Math.max(0, 1 - urgency * 1.25);
+    if (borderWeight > 0 && isOnBorder(nextHead, size)) {
+      score += 2.0 * borderWeight;
+      const clockwiseDir = borderClockwiseDirection(nextHead, size);
+      if (clockwiseDir === ev.direction) {
+        score += 1.5 * borderWeight;
       }
     }
 
-    // Food seeking (increases from 60% urgency)
-    if (urgency > 0.6 && ev.pathLength !== null && foodReachable) {
-      const foodWeight = Math.min(1, (urgency - 0.6) / 0.4);
-      score += (1 / (ev.pathLength + 1)) * 5 * foodWeight;
-    }
-
-    // Food avoidance (below 50% urgency)
-    if (urgency < 0.5) {
-      const isNextFood =
-        nextHead.x === state.food.x && nextHead.y === state.food.y;
-      if (isNextFood) {
-        score -= 1.5;
-      }
+    // Food seeking (always active, scales with urgency)
+    if (ev.pathLength !== null && foodReachable) {
+      const foodWeight = urgency < 0.5 ? 0.3 : urgency < 0.8 ? 0.6 + (urgency - 0.5) * 2 : 1.0;
+      score += (1 / (ev.pathLength + 1)) * 8 * foodWeight;
     }
 
     // Stability: prefer current direction

@@ -332,12 +332,6 @@ export default function App() {
   );
   const [lapTimes, setLapTimes] = useState<LapTimes>(() => createLapTimes());
   const [endTimes, setEndTimes] = useState<EndTimes>(() => createEndTimes());
-  const lastEatTimesRef = useRef<Record<string, number>>(
-    PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
-      acc[id] = 0;
-      return acc;
-    }, {})
-  );
   const [started, setStarted] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [manualEnabled, setManualEnabled] = useState(false);
@@ -415,7 +409,7 @@ export default function App() {
   const getTimeoutRemainingMs = (playerId: string) => {
     const state = match[playerId];
     const now = getSimNowForPlayer(playerId);
-    const lastEat = lastEatTimesRef.current[playerId] ?? now;
+    const lastEat = state.lastEatSimTime ?? now;
     const timeoutMs = getTimeoutMs(state.fruitsEaten);
     return Math.max(0, timeoutMs - Math.max(0, now - lastEat));
   };
@@ -431,10 +425,6 @@ export default function App() {
     setStarted(true);
     setLapTimes(createLapTimes());
     setEndTimes(createEndTimes());
-    lastEatTimesRef.current = PLAYER_IDS.reduce<Record<string, number>>((acc, id) => {
-      acc[id] = now;
-      return acc;
-    }, {});
 
     setMatch((current) => {
       const applyManualDirection = (state: GameState) => {
@@ -447,13 +437,18 @@ export default function App() {
         return { ...state, direction: manualDirection };
       };
 
+      const initState = (state: GameState): GameState => ({
+        ...startIfReady(state),
+        lastEatSimTime: now
+      });
+
       if (allGameover) {
         const fresh = PLAYERS.reduce<MatchState>((acc, player) => {
           acc[player.id] = createInitialState(GRID_SIZE, OBSTACLE_COUNT);
           return acc;
         }, {} as MatchState);
         return PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
-          const startedState = startIfReady(fresh[playerId]);
+          const startedState = initState(fresh[playerId]);
           acc[playerId] =
             playerId === MANUAL_PLAYER_ID
               ? applyManualDirection(startedState)
@@ -463,7 +458,7 @@ export default function App() {
       }
 
       return PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
-        const startedState = startIfReady(current[playerId]);
+        const startedState = initState(current[playerId]);
         acc[playerId] =
           playerId === MANUAL_PLAYER_ID
             ? applyManualDirection(startedState)
@@ -487,7 +482,7 @@ export default function App() {
         const nextState = PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
           const strategy = strategies[playerId] ?? DEFAULT_STRATEGIES[playerId];
           const manual = playerId === MANUAL_PLAYER_ID && manualEnabled;
-          const lastEat = lastEatTimesRef.current[playerId] ?? now;
+          const lastEat = current[playerId].lastEatSimTime ?? now;
           const elapsed = Math.max(0, now - lastEat);
           const timeoutMs = getTimeoutMs(current[playerId].fruitsEaten);
           const stateWithTiming = { ...current[playerId], timeSinceLastFruit: elapsed, timeoutMs };
@@ -495,10 +490,9 @@ export default function App() {
           return acc;
         }, {} as MatchState);
 
-        const nextLastEat = { ...lastEatTimesRef.current };
         for (const playerId of PLAYER_IDS) {
           if (nextState[playerId].fruitsEaten > current[playerId].fruitsEaten) {
-            const lastEat = nextLastEat[playerId] ?? now;
+            const lastEat = current[playerId].lastEatSimTime ?? now;
             const elapsed = Math.max(0, now - lastEat);
             const points = getFruitPoints(
               elapsed,
@@ -506,18 +500,17 @@ export default function App() {
             );
             nextState[playerId] = {
               ...nextState[playerId],
-              score: current[playerId].score + points
+              score: current[playerId].score + points,
+              lastEatSimTime: now
             };
-            nextLastEat[playerId] = now;
           }
         }
-        lastEatTimesRef.current = nextLastEat;
 
         for (const playerId of PLAYER_IDS) {
           if (nextState[playerId].status !== "running") {
             continue;
           }
-          const lastEat = nextLastEat[playerId] ?? now;
+          const lastEat = nextState[playerId].lastEatSimTime ?? now;
           const timeoutMs = getTimeoutMs(nextState[playerId].fruitsEaten);
           if (now - lastEat >= timeoutMs) {
             nextState[playerId] = { ...nextState[playerId], status: "gameover" };

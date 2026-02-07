@@ -15,6 +15,7 @@ export type GameState = {
   score: number;
   fruitsEaten: number;
   status: GameStatus;
+  lastEatSimTime?: number;
   timeSinceLastFruit?: number;
   timeoutMs?: number;
 };
