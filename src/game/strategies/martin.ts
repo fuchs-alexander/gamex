@@ -4,8 +4,7 @@ import {
   type Point,
   movePoint,
   wrapPoint,
-  pointKey,
-  isOpposite
+  pointKey
 } from "../snake";
 import {
   directionToTail,
@@ -31,12 +30,6 @@ const stepSnakeForward = (snake: Point[], nextHead: Point): Point[] => {
   const next = [nextHead, ...snake];
   next.pop();
   return next;
-};
-
-const manhattanWrapped = (a: Point, b: Point, size: number): number => {
-  const dx = Math.min(Math.abs(a.x - b.x), size - Math.abs(a.x - b.x));
-  const dy = Math.min(Math.abs(a.y - b.y), size - Math.abs(a.y - b.y));
-  return dx + dy;
 };
 
 type ScoredMove = {
