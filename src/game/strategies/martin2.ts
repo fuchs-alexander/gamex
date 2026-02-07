@@ -99,13 +99,15 @@ const scorePhase1 = (
 };
 
 /* ── Phase 2: Kreis-Modus (>= 100 Früchte) ── */
+/* Kreist am Rand. Nur wenn Timer < 10s: Frucht holen. */
 
 const scorePhase2 = (
   evaluation: MoveEvaluation,
   nextHead: Point,
   state: GameState,
   size: number,
-  foodReachable: boolean
+  foodReachable: boolean,
+  timerUrgent: boolean
 ): number => {
   let score = 0;
 
@@ -121,18 +123,25 @@ const scorePhase2 = (
   const spaceScore = evaluation.space / (snakeLength * 2);
   score += spaceScore * 0.3;
 
-  // Border clockwise preference
-  if (isOnBorder(nextHead, size)) {
-    score += 0.4;
-    const clockwiseDir = borderClockwiseDirection(nextHead, size);
-    if (clockwiseDir === evaluation.direction) {
-      score += 0.3;
+  if (timerUrgent) {
+    // Timer unter 10s: maximal aggressiv Frucht holen
+    if (foodReachable && evaluation.pathLength !== null) {
+      const pathScore = 1 / (evaluation.pathLength + 1);
+      score += pathScore * 1.5;
     }
-  }
-
-  // Collect fruits along the way (only if close and safe)
-  if (foodReachable && evaluation.pathLength !== null && evaluation.pathLength <= 3 && evaluation.safe) {
-    score += 0.15;
+    // Kürzester Pfad dominiert alles
+    if (evaluation.pathLength !== null) {
+      score -= evaluation.pathLength * 0.05;
+    }
+  } else {
+    // Normal: am Rand kreisen
+    if (isOnBorder(nextHead, size)) {
+      score += 0.4;
+      const clockwiseDir = borderClockwiseDirection(nextHead, size);
+      if (clockwiseDir === evaluation.direction) {
+        score += 0.3;
+      }
+    }
   }
 
   // Obstacle avoidance
@@ -151,6 +160,10 @@ export const pickMartin2Direction = (
   const occupiedRatio = computeOccupiedRatio(state, size);
   const foodReachable = isFoodReachable(state, size);
   const phase2 = state.fruitsEaten >= 100;
+  const timeSinceLastFruit = state.timeSinceLastFruit ?? 0;
+  const timeoutMs = state.timeoutMs ?? 30000;
+  const timeRemaining = timeoutMs - timeSinceLastFruit;
+  const timerUrgent = timeRemaining <= 10000;
 
   const evaluations: MoveEvaluation[] = [];
   for (const dir of directions) {
@@ -183,7 +196,7 @@ export const pickMartin2Direction = (
     const nextHead = wrapPoint(movePoint(head, evaluation.direction), size);
 
     const score = phase2
-      ? scorePhase2(evaluation, nextHead, state, size, foodReachable)
+      ? scorePhase2(evaluation, nextHead, state, size, foodReachable, timerUrgent)
       : scorePhase1(evaluation, nextHead, state, size, occupiedRatio, foodReachable);
 
     if (score > bestScore) {
