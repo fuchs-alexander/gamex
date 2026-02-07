@@ -440,6 +440,23 @@ export default function App() {
           return next;
         });
 
+        for (const playerId of PLAYER_IDS) {
+          if (nextState[playerId].fruitsEaten > current[playerId].fruitsEaten) {
+            const lastEat = lastEatTimes[playerId] ?? now;
+            const elapsed = Math.max(0, now - lastEat);
+            const maxPoints = 30;
+            const tau = 7000;
+            const points = Math.max(
+              1,
+              Math.round(maxPoints * Math.exp(-elapsed / tau))
+            );
+            nextState[playerId] = {
+              ...nextState[playerId],
+              score: current[playerId].score + points
+            };
+          }
+        }
+
         setLapTimes((prev) => {
           let changed = false;
           const next = { ...prev };
@@ -547,12 +564,15 @@ export default function App() {
       <div className="header">
         <div className="title">Snake Duel</div>
         <div className="score">
-          {PLAYERS.map((player, index) => (
-            <span key={player.id} className={`score-item ${player.colorClass}`}>
-              {player.label}: {match[player.id].score}
-              {index < PLAYERS.length - 1 ? " · " : ""}
-            </span>
-          ))}
+          {[...PLAYERS]
+            .sort((a, b) => match[b.id].score - match[a.id].score)
+            .map((player, index) => (
+              <span key={player.id} className={`score-item ${player.colorClass}`}>
+                {STRATEGY_LABELS[strategies[player.id] ?? player.defaultStrategy]}:{" "}
+                {match[player.id].score}
+                {index < PLAYERS.length - 1 ? " · " : ""}
+              </span>
+            ))}
         </div>
         <div className="speed-control" role="group" aria-label="Tempo">
           <span>Tempo</span>
