@@ -12,6 +12,7 @@ import {
   pickAutopilotDirection,
   STRATEGIES,
   STRATEGY_LABELS,
+  STRATEGY_DESCRIPTIONS,
   type AutopilotStrategy
 } from "./game/strategies";
 
@@ -225,6 +226,9 @@ const Board = ({
             </option>
           ))}
         </select>
+        {STRATEGY_DESCRIPTIONS[strategy] && (
+          <div className="strategy-description">{STRATEGY_DESCRIPTIONS[strategy]}</div>
+        )}
       </div>
 
       <div className="board-wrap">
