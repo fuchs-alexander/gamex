@@ -2,6 +2,7 @@ import {
   type Direction,
   type GameState,
   type Point,
+  isOpposite,
   movePoint,
   pointKey,
   wrapPoint
@@ -10,204 +11,255 @@ import {
   directionToTail,
   directions,
   evaluateMove,
+  floodFillCount,
   isFoodReachable,
   type MoveEvaluation
 } from "./utils";
 
-/* ── Helpers (from MIMO) ── */
+/* ══════════════════════════════════════════════════════
+   Helpers
+   ══════════════════════════════════════════════════════ */
 
-const computeOccupiedRatio = (state: GameState, size: number): number => {
-  const totalCells = size * size;
-  return (state.snake.length + state.obstacles.length) / totalCells;
+const directionVectors: Record<Direction, Point> = {
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 }
 };
 
-/* ── Helpers (from Martin) ── */
+const neighborPoints = (point: Point, size: number): Point[] =>
+  directions.map((dir) =>
+    wrapPoint(
+      { x: point.x + directionVectors[dir].x, y: point.y + directionVectors[dir].y },
+      size
+    )
+  );
 
-const isOnBorder = (point: Point, size: number): boolean =>
-  point.x === 0 || point.x === size - 1 || point.y === 0 || point.y === size - 1;
-
-const borderClockwiseDirection = (head: Point, size: number): Direction | null => {
-  if (head.y === 0 && head.x < size - 1) return "right";
-  if (head.x === size - 1 && head.y < size - 1) return "down";
-  if (head.y === size - 1 && head.x > 0) return "left";
-  if (head.x === 0 && head.y > 0) return "up";
-  return null;
-};
-
-/* ── Obstacle proximity detection ── */
-
-const countNearbyObstacles = (
-  pos: Point,
-  size: number,
-  obstacles: Point[]
+/* Codex 5-3: free exits from a position */
+const countImmediateExits = (
+  head: Point,
+  snake: Point[],
+  obstacles: Point[],
+  size: number
 ): number => {
-  const obstacleSet = new Set(obstacles.map(pointKey));
-  const neighbors = [
-    wrapPoint({ x: pos.x + 1, y: pos.y }, size),
-    wrapPoint({ x: pos.x - 1, y: pos.y }, size),
-    wrapPoint({ x: pos.x, y: pos.y + 1 }, size),
-    wrapPoint({ x: pos.x, y: pos.y - 1 }, size)
-  ];
+  const blocked = new Set<string>([
+    ...snake.slice(0, -1).map(pointKey),
+    ...obstacles.map(pointKey)
+  ]);
+  let exits = 0;
+  for (const dir of directions) {
+    const next = wrapPoint(movePoint(head, dir), size);
+    if (!blocked.has(pointKey(next))) exits += 1;
+  }
+  return exits;
+};
+
+/* Codex 5-3: non-backtracking options */
+const countFutureOptions = (
+  head: Point,
+  snake: Point[],
+  obstacles: Point[],
+  size: number,
+  previousDirection: Direction
+): number => {
+  const blocked = new Set<string>([
+    ...snake.slice(0, -1).map(pointKey),
+    ...obstacles.map(pointKey)
+  ]);
+  let options = 0;
+  for (const dir of directions) {
+    if (isOpposite(previousDirection, dir)) continue;
+    const next = wrapPoint(movePoint(head, dir), size);
+    if (!blocked.has(pointKey(next))) options += 1;
+  }
+  return options;
+};
+
+/* Fuchs: compactness (wall/body hugging) */
+const compactness = (pos: Point, size: number, blocked: Set<string>): number => {
   let count = 0;
-  for (const n of neighbors) {
-    if (obstacleSet.has(pointKey(n))) count++;
+  for (const n of neighborPoints(pos, size)) {
+    if (blocked.has(pointKey(n))) count++;
   }
   return count;
 };
 
-/* ── Phase 1: Frucht-Jäger (< 100 Früchte) — MIMO-style ── */
-
-const scorePhase1 = (
-  evaluation: MoveEvaluation,
+/* Fuchs: detect tiny unusable pockets */
+const countSmallPockets = (
   nextHead: Point,
+  size: number,
+  blocked: Set<string>
+): number => {
+  const freeNeighbors = neighborPoints(nextHead, size).filter(
+    (n) => !blocked.has(pointKey(n))
+  );
+  let pockets = 0;
+  for (const fn of freeNeighbors) {
+    if (floodFillCount(fn, size, blocked) < 4) pockets++;
+  }
+  return pockets;
+};
+
+/* Codex 5-3: simulate next snake */
+const nextSnakeAfterMove = (state: GameState, direction: Direction, size: number) => {
+  const head = state.snake[0];
+  const nextHead = wrapPoint(movePoint(head, direction), size);
+  const ateFood = nextHead.x === state.food.x && nextHead.y === state.food.y;
+  const nextSnake = [nextHead, ...state.snake];
+  if (!ateFood) nextSnake.pop();
+  return { nextHead, nextSnake };
+};
+
+/* Codex 5-3: critical space threshold */
+const minSurvivalSpace = (snakeLength: number) =>
+  Math.max(8, Math.floor(snakeLength * 0.9));
+
+/* ══════════════════════════════════════════════════════
+   Einzige Score-Funktion: Codex 5-3 Basis + Adaptive
+   Quellen: Codex 5-3, Sonnet 4-5, Opus 4-6, Fuchs,
+            Fuchs-2, MIMO, Balanced, Cautious, Space,
+            Aggressive, Gemini, Codex 5-2
+   ══════════════════════════════════════════════════════ */
+
+const scoreMove = (
   state: GameState,
   size: number,
-  occupiedRatio: number,
-  foodReachable: boolean
+  evaluation: MoveEvaluation,
+  shortestSafePath: number | null,
+  occupiedRatio: number
 ): number => {
+  const { nextHead, nextSnake } = nextSnakeAfterMove(state, evaluation.direction, size);
   const snakeLength = state.snake.length;
+
+  const immediateExits = countImmediateExits(nextHead, nextSnake, state.obstacles, size);
+  const futureOptions = countFutureOptions(
+    nextHead, nextSnake, state.obstacles, size, evaluation.direction
+  );
+
+  const criticalSpace = minSurvivalSpace(snakeLength);
+  const foodPath = evaluation.pathLength ?? Number.POSITIVE_INFINITY;
+  const pathProgress =
+    shortestSafePath === null || !Number.isFinite(foodPath)
+      ? 0
+      : Math.max(0, shortestSafePath / Math.max(1, foodPath));
+
   let score = 0;
 
-  // Space score (MIMO)
-  const spaceScore = evaluation.space / (snakeLength * 2);
-  score += spaceScore * 0.4;
-
-  // Safety (MIMO)
+  /* ── Codex 5-3: Safety (immer aktiv) ── */
   if (evaluation.safe) {
-    score += 0.3;
+    score += 10_000;
   } else {
-    const unsafePenalty = Math.max(0.1, 0.3 - (snakeLength / 50));
-    score -= unsafePenalty;
+    score -= occupiedRatio > 0.5 ? 20_000 : 10_000; // Sonnet 4-5: stärker bei hoher Belegung
   }
 
-  // Food seeking (MIMO)
-  if (foodReachable && evaluation.pathLength !== null) {
-    const pathScore = 1 / (evaluation.pathLength + 1);
-    score += pathScore * 0.2;
+  /* ── Codex 5-3: Space (adaptiv gewichtet) ── */
+  const spaceWeight = occupiedRatio < 0.25 ? 20
+    : occupiedRatio < 0.50 ? 22
+    : 25; // Sonnet 4-5 + Fuchs-2: steigt mit Belegung
+  score += evaluation.space * spaceWeight;
+
+  /* ── Codex 5-3: Exits + Future Options ── */
+  score += immediateExits * 250;
+  score += futureOptions * 180;
+
+  /* ── Codex 5-3: Path progress ── */
+  score += pathProgress * 900;
+
+  /* ── Codex 5-3 + MIMO: Food bonus (stärker im Early Game) ── */
+  if (Number.isFinite(foodPath)) {
+    const foodMultiplier = occupiedRatio < 0.25 ? 1.2 : 1.0; // MIMO/Sonnet: early = aggressiver
+    score += (250 / (foodPath + 1)) * foodMultiplier;
   }
 
-  // Extra unsafe penalty at high occupation (MIMO)
-  if (occupiedRatio > 0.5 && !evaluation.safe) {
-    score -= 0.2;
+  /* ── Codex 5-3: Cramped penalty ── */
+  if (evaluation.space < criticalSpace) {
+    score -= (criticalSpace - evaluation.space) * 420;
   }
 
-  // Obstacle avoidance
-  const nearObstacles = countNearbyObstacles(nextHead, size, state.obstacles);
-  score -= nearObstacles * 0.15;
+  /* ── Fuchs + Fuchs-2: Late-Game compactness + pockets (ratio > 0.4) ── */
+  if (occupiedRatio > 0.4) {
+    const blocked = new Set<string>([
+      ...nextSnake.map(pointKey),
+      ...state.obstacles.map(pointKey)
+    ]);
+    score += compactness(nextHead, size, blocked) * 50;
+    score -= countSmallPockets(nextHead, size, blocked) * 60;
+  }
+
+  /* ── Fuchs-2: Continuity bonus (late game) ── */
+  if (occupiedRatio > 0.5 && evaluation.direction === state.direction) {
+    score += 30;
+  }
+
+  /* ── Codex 5-3: Stability bias ── */
+  if (evaluation.direction === state.direction) {
+    score += 24;
+  }
 
   return score;
 };
 
-/* ── Phase 2: Kreis-Modus (>= 100 Früchte) ── */
-/* Kreist am Rand. Nur wenn Timer < 10s: Frucht holen. */
-
-const scorePhase2 = (
-  evaluation: MoveEvaluation,
-  nextHead: Point,
-  state: GameState,
-  size: number,
-  foodReachable: boolean,
-  timerUrgent: boolean
-): number => {
-  let score = 0;
-
-  // Safety
-  if (evaluation.safe) {
-    score += 0.3;
-  } else {
-    score -= 0.3;
-  }
-
-  // Space
-  const snakeLength = state.snake.length;
-  const spaceScore = evaluation.space / (snakeLength * 2);
-  score += spaceScore * 0.3;
-
-  if (timerUrgent) {
-    // Timer unter 10s: maximal aggressiv Frucht holen
-    if (foodReachable && evaluation.pathLength !== null) {
-      const pathScore = 1 / (evaluation.pathLength + 1);
-      score += pathScore * 1.5;
-    }
-    // Kürzester Pfad dominiert alles
-    if (evaluation.pathLength !== null) {
-      score -= evaluation.pathLength * 0.05;
-    }
-  } else {
-    // Normal: am Rand kreisen
-    if (isOnBorder(nextHead, size)) {
-      score += 0.4;
-      const clockwiseDir = borderClockwiseDirection(nextHead, size);
-      if (clockwiseDir === evaluation.direction) {
-        score += 0.3;
-      }
-    }
-  }
-
-  // Obstacle avoidance
-  const nearObstacles = countNearbyObstacles(nextHead, size, state.obstacles);
-  score -= nearObstacles * 0.15;
-
-  return score;
-};
-
-/* ── Main strategy ── */
+/* ══════════════════════════════════════════════════════
+   Hauptfunktion
+   ══════════════════════════════════════════════════════ */
 
 export const pickMartin2Direction = (
   state: GameState,
   size: number
 ): Direction | null => {
-  const occupiedRatio = computeOccupiedRatio(state, size);
-  const foodReachable = isFoodReachable(state, size);
-  const phase2 = state.fruitsEaten >= 100;
-  const timeSinceLastFruit = state.timeSinceLastFruit ?? 0;
-  const timeoutMs = state.timeoutMs ?? 30000;
-  const timeRemaining = timeoutMs - timeSinceLastFruit;
-  const timerUrgent = timeRemaining <= 10000;
+  const snakeLength = state.snake.length;
+  const totalCells = size * size;
+  const occupiedRatio = (snakeLength + state.obstacles.length) / totalCells;
 
-  const evaluations: MoveEvaluation[] = [];
+  /* ── Alle Moves evaluieren ── */
+  const safeEvaluations: MoveEvaluation[] = [];
+  const fallbackEvaluations: MoveEvaluation[] = [];
+
   for (const dir of directions) {
     const evaluation = evaluateMove(state, size, dir);
-    if (evaluation) {
-      evaluations.push(evaluation);
-    }
+    if (!evaluation) continue;
+    fallbackEvaluations.push(evaluation);
+    if (evaluation.safe) safeEvaluations.push(evaluation);
   }
 
-  if (evaluations.length === 0) {
-    return directionToTail(state, size);
-  }
+  /* ── Codex 5-3: Safe pool bevorzugt ── */
+  const pool = safeEvaluations.length > 0 ? safeEvaluations : fallbackEvaluations;
+  if (pool.length === 0) return directionToTail(state, size);
 
-  // Food unreachable fallback (MIMO): pick max space
+  /* ── Sonnet 4-5 + Codex 5-2: Food unreachable fallback ── */
+  const foodReachable = isFoodReachable(state, size);
   if (!foodReachable) {
+    // Sonnet 4-5: Tail-Chase wenn safe genug
+    const tailDir = directionToTail(state, size);
+    if (tailDir) {
+      const tailEval = pool.find((e) => e.direction === tailDir);
+      if (tailEval && tailEval.safe) return tailDir;
+    }
+    // Codex 5-2: Safe max-space fallback
     let bestSpace: MoveEvaluation | null = null;
-    for (const evaluation of evaluations) {
-      if (!bestSpace || evaluation.space > bestSpace.space) {
-        bestSpace = evaluation;
-      }
+    for (const e of pool) {
+      if (!bestSpace || e.space > bestSpace.space) bestSpace = e;
     }
     return bestSpace?.direction ?? directionToTail(state, size);
   }
 
-  const head = state.snake[0];
-  let bestScore = -Infinity;
-  let bestDirection: Direction | null = null;
-
-  for (const evaluation of evaluations) {
-    const nextHead = wrapPoint(movePoint(head, evaluation.direction), size);
-
-    const score = phase2
-      ? scorePhase2(evaluation, nextHead, state, size, foodReachable, timerUrgent)
-      : scorePhase1(evaluation, nextHead, state, size, occupiedRatio, foodReachable);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestDirection = evaluation.direction;
+  /* ── Codex 5-3: shortestSafePath für pathProgress ── */
+  let shortestSafePath: number | null = null;
+  for (const ev of safeEvaluations) {
+    if (ev.pathLength === null) continue;
+    if (shortestSafePath === null || ev.pathLength < shortestSafePath) {
+      shortestSafePath = ev.pathLength;
     }
   }
 
-  if (bestDirection === null || bestScore < 0) {
-    return directionToTail(state, size);
+  /* ── Score und beste Richtung wählen ── */
+  let best: { direction: Direction; score: number } | null = null;
+  for (const ev of pool) {
+    const s = scoreMove(state, size, ev, shortestSafePath, occupiedRatio);
+    if (!best || s > best.score) {
+      best = { direction: ev.direction, score: s };
+    }
   }
 
-  return bestDirection;
+  return best?.direction ?? directionToTail(state, size);
 };
