@@ -11,97 +11,18 @@ import {
   directionToTail,
   directions,
   evaluateMove,
-  floodFillCount,
   isFoodReachable,
   type MoveEvaluation
 } from "./utils";
 
 /* ══════════════════════════════════════════════════════
-   Helpers
+   Martin Hulus 2 — Eigene Strategie
+   Kernprinzip: Maximiere Bewegungsfreiheit,
+   suche Essen nach Dringlichkeit
    ══════════════════════════════════════════════════════ */
 
-const directionVectors: Record<Direction, Point> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 }
-};
-
-const neighborPoints = (point: Point, size: number): Point[] =>
-  directions.map((dir) =>
-    wrapPoint(
-      { x: point.x + directionVectors[dir].x, y: point.y + directionVectors[dir].y },
-      size
-    )
-  );
-
-/* Codex 5-3: free exits from a position */
-const countImmediateExits = (
-  head: Point,
-  snake: Point[],
-  obstacles: Point[],
-  size: number
-): number => {
-  const blocked = new Set<string>([
-    ...snake.slice(0, -1).map(pointKey),
-    ...obstacles.map(pointKey)
-  ]);
-  let exits = 0;
-  for (const dir of directions) {
-    const next = wrapPoint(movePoint(head, dir), size);
-    if (!blocked.has(pointKey(next))) exits += 1;
-  }
-  return exits;
-};
-
-/* Codex 5-3: non-backtracking options */
-const countFutureOptions = (
-  head: Point,
-  snake: Point[],
-  obstacles: Point[],
-  size: number,
-  previousDirection: Direction
-): number => {
-  const blocked = new Set<string>([
-    ...snake.slice(0, -1).map(pointKey),
-    ...obstacles.map(pointKey)
-  ]);
-  let options = 0;
-  for (const dir of directions) {
-    if (isOpposite(previousDirection, dir)) continue;
-    const next = wrapPoint(movePoint(head, dir), size);
-    if (!blocked.has(pointKey(next))) options += 1;
-  }
-  return options;
-};
-
-/* Fuchs: compactness (wall/body hugging) */
-const compactness = (pos: Point, size: number, blocked: Set<string>): number => {
-  let count = 0;
-  for (const n of neighborPoints(pos, size)) {
-    if (blocked.has(pointKey(n))) count++;
-  }
-  return count;
-};
-
-/* Fuchs: detect tiny unusable pockets */
-const countSmallPockets = (
-  nextHead: Point,
-  size: number,
-  blocked: Set<string>
-): number => {
-  const freeNeighbors = neighborPoints(nextHead, size).filter(
-    (n) => !blocked.has(pointKey(n))
-  );
-  let pockets = 0;
-  for (const fn of freeNeighbors) {
-    if (floodFillCount(fn, size, blocked) < 4) pockets++;
-  }
-  return pockets;
-};
-
-/* Codex 5-3: simulate next snake */
-const nextSnakeAfterMove = (state: GameState, direction: Direction, size: number) => {
+/** Simulate next snake position after moving */
+const simulateStep = (state: GameState, direction: Direction, size: number) => {
   const head = state.snake[0];
   const nextHead = wrapPoint(movePoint(head, direction), size);
   const ateFood = nextHead.x === state.food.x && nextHead.y === state.food.y;
@@ -110,90 +31,126 @@ const nextSnakeAfterMove = (state: GameState, direction: Direction, size: number
   return { nextHead, nextSnake };
 };
 
-/* Codex 5-3: critical space threshold */
-const minSurvivalSpace = (snakeLength: number) =>
-  Math.max(8, Math.floor(snakeLength * 0.9));
+/** Build the set of blocked cells after a simulated move */
+const buildBlocked = (snake: Point[], obstacles: Point[]): Set<string> =>
+  new Set<string>([
+    ...snake.slice(0, -1).map(pointKey),
+    ...obstacles.map(pointKey)
+  ]);
 
-/* ══════════════════════════════════════════════════════
-   Einzige Score-Funktion: Codex 5-3 Basis + Adaptive
-   Quellen: Codex 5-3, Sonnet 4-5, Opus 4-6, Fuchs,
-            Fuchs-2, MIMO, Balanced, Cautious, Space,
-            Aggressive, Gemini, Codex 5-2
-   ══════════════════════════════════════════════════════ */
+/** Count open exits from a position (1 step) */
+const countExits = (
+  pos: Point,
+  blocked: Set<string>,
+  size: number
+): number => {
+  let exits = 0;
+  for (const dir of directions) {
+    const next = wrapPoint(movePoint(pos, dir), size);
+    if (!blocked.has(pointKey(next))) exits++;
+  }
+  return exits;
+};
 
+/** 2-step reachability: how many unique cells can we reach in 2 moves
+    (without backtracking). Looks further ahead than simple exit counting. */
+const twoStepReach = (
+  pos: Point,
+  fromDir: Direction,
+  blocked: Set<string>,
+  size: number
+): number => {
+  const seen = new Set<string>([pointKey(pos)]);
+  let count = 0;
+
+  for (const dir1 of directions) {
+    if (isOpposite(fromDir, dir1)) continue;
+    const step1 = wrapPoint(movePoint(pos, dir1), size);
+    const key1 = pointKey(step1);
+    if (blocked.has(key1)) continue;
+    if (!seen.has(key1)) {
+      seen.add(key1);
+      count++;
+    }
+
+    for (const dir2 of directions) {
+      if (isOpposite(dir1, dir2)) continue;
+      const step2 = wrapPoint(movePoint(step1, dir2), size);
+      const key2 = pointKey(step2);
+      if (!blocked.has(key2) && !seen.has(key2)) {
+        seen.add(key2);
+        count++;
+      }
+    }
+  }
+  return count;
+};
+
+/** Timer pressure: 0 = relaxed, 1 = critical.
+    Starts rising at 40% of timeout, reaches 1.0 at 80%. */
+const getTimerPressure = (state: GameState): number => {
+  const elapsed = state.timeSinceLastFruit ?? 0;
+  const timeout = state.timeoutMs ?? 10000;
+  const ratio = elapsed / timeout;
+  if (ratio < 0.4) return 0;
+  return Math.min(1, (ratio - 0.4) / 0.4);
+};
+
+/** Dynamic minimum safe space — adapts to board congestion */
+const minSafeSpace = (snakeLength: number, fillRatio: number): number => {
+  const base = Math.max(8, Math.floor(snakeLength * 0.8));
+  if (fillRatio > 0.5) return Math.floor(base * 1.4);
+  if (fillRatio > 0.3) return Math.floor(base * 1.1);
+  return base;
+};
+
+/** Score a single move — one smooth function, no phases */
 const scoreMove = (
   state: GameState,
   size: number,
   evaluation: MoveEvaluation,
-  shortestSafePath: number | null,
-  occupiedRatio: number
+  pressure: number,
+  fillRatio: number
 ): number => {
-  const { nextHead, nextSnake } = nextSnakeAfterMove(state, evaluation.direction, size);
+  const { nextHead, nextSnake } = simulateStep(state, evaluation.direction, size);
+  const blocked = buildBlocked(nextSnake, state.obstacles);
   const snakeLength = state.snake.length;
-
-  const immediateExits = countImmediateExits(nextHead, nextSnake, state.obstacles, size);
-  const futureOptions = countFutureOptions(
-    nextHead, nextSnake, state.obstacles, size, evaluation.direction
-  );
-
-  const criticalSpace = minSurvivalSpace(snakeLength);
-  const foodPath = evaluation.pathLength ?? Number.POSITIVE_INFINITY;
-  const pathProgress =
-    shortestSafePath === null || !Number.isFinite(foodPath)
-      ? 0
-      : Math.max(0, shortestSafePath / Math.max(1, foodPath));
 
   let score = 0;
 
-  /* ── Codex 5-3: Safety (immer aktiv) ── */
+  /* ── Safety: safe moves always preferred ── */
   if (evaluation.safe) {
     score += 10_000;
   } else {
-    score -= occupiedRatio > 0.5 ? 20_000 : 10_000; // Sonnet 4-5: stärker bei hoher Belegung
+    score -= 10_000 * (1 + fillRatio);
   }
 
-  /* ── Codex 5-3: Space (adaptiv gewichtet) ── */
-  const spaceWeight = occupiedRatio < 0.25 ? 20
-    : occupiedRatio < 0.50 ? 22
-    : 25; // Sonnet 4-5 + Fuchs-2: steigt mit Belegung
+  /* ── Space: survival metric ── */
+  const spaceWeight = 15 + fillRatio * 15;
   score += evaluation.space * spaceWeight;
 
-  /* ── Codex 5-3: Exits + Future Options ── */
-  score += immediateExits * 250;
-  score += futureOptions * 180;
+  const threshold = minSafeSpace(snakeLength, fillRatio);
+  if (evaluation.space < threshold) {
+    score -= (threshold - evaluation.space) * 400;
+  }
 
-  /* ── Codex 5-3: Path progress ── */
-  score += pathProgress * 900;
+  /* ── Mobility: 1-step exits + 2-step reach ── */
+  const exits = countExits(nextHead, blocked, size);
+  score += exits * 200;
 
-  /* ── Codex 5-3 + MIMO: Food bonus (stärker im Early Game) ── */
+  const reach = twoStepReach(nextHead, evaluation.direction, blocked, size);
+  score += reach * 25;
+
+  /* ── Food: urgency scales with timer pressure ── */
+  const foodPath = evaluation.pathLength ?? Number.POSITIVE_INFINITY;
   if (Number.isFinite(foodPath)) {
-    const foodMultiplier = occupiedRatio < 0.25 ? 1.2 : 1.0; // MIMO/Sonnet: early = aggressiver
-    score += (250 / (foodPath + 1)) * foodMultiplier;
+    const baseFoodScore = 300 / (foodPath + 1);
+    score += baseFoodScore * (1 + pressure * 2);
   }
 
-  /* ── Codex 5-3: Cramped penalty ── */
-  if (evaluation.space < criticalSpace) {
-    score -= (criticalSpace - evaluation.space) * 420;
-  }
-
-  /* ── Fuchs + Fuchs-2: Late-Game compactness + pockets (ratio > 0.4) ── */
-  if (occupiedRatio > 0.4) {
-    const blocked = new Set<string>([
-      ...nextSnake.map(pointKey),
-      ...state.obstacles.map(pointKey)
-    ]);
-    score += compactness(nextHead, size, blocked) * 50;
-    score -= countSmallPockets(nextHead, size, blocked) * 60;
-  }
-
-  /* ── Fuchs-2: Continuity bonus (late game) ── */
-  if (occupiedRatio > 0.5 && evaluation.direction === state.direction) {
-    score += 30;
-  }
-
-  /* ── Codex 5-3: Stability bias ── */
+  /* ── Stability: reduce unnecessary direction changes ── */
   if (evaluation.direction === state.direction) {
-    score += 24;
+    score += 20;
   }
 
   return score;
@@ -209,33 +166,32 @@ export const pickMartin2Direction = (
 ): Direction | null => {
   const snakeLength = state.snake.length;
   const totalCells = size * size;
-  const occupiedRatio = (snakeLength + state.obstacles.length) / totalCells;
+  const fillRatio = (snakeLength + state.obstacles.length) / totalCells;
+  const pressure = getTimerPressure(state);
 
-  /* ── Alle Moves evaluieren ── */
-  const safeEvaluations: MoveEvaluation[] = [];
-  const fallbackEvaluations: MoveEvaluation[] = [];
+  /* Evaluate all possible moves */
+  const safeEvals: MoveEvaluation[] = [];
+  const allEvals: MoveEvaluation[] = [];
 
   for (const dir of directions) {
     const evaluation = evaluateMove(state, size, dir);
     if (!evaluation) continue;
-    fallbackEvaluations.push(evaluation);
-    if (evaluation.safe) safeEvaluations.push(evaluation);
+    allEvals.push(evaluation);
+    if (evaluation.safe) safeEvals.push(evaluation);
   }
 
-  /* ── Codex 5-3: Safe pool bevorzugt ── */
-  const pool = safeEvaluations.length > 0 ? safeEvaluations : fallbackEvaluations;
+  /* Always prefer safe moves */
+  const pool = safeEvals.length > 0 ? safeEvals : allEvals;
   if (pool.length === 0) return directionToTail(state, size);
 
-  /* ── Sonnet 4-5 + Codex 5-2: Food unreachable fallback ── */
+  /* Food unreachable: survival mode */
   const foodReachable = isFoodReachable(state, size);
   if (!foodReachable) {
-    // Sonnet 4-5: Tail-Chase wenn safe genug
     const tailDir = directionToTail(state, size);
     if (tailDir) {
       const tailEval = pool.find((e) => e.direction === tailDir);
       if (tailEval && tailEval.safe) return tailDir;
     }
-    // Codex 5-2: Safe max-space fallback
     let bestSpace: MoveEvaluation | null = null;
     for (const e of pool) {
       if (!bestSpace || e.space > bestSpace.space) bestSpace = e;
@@ -243,19 +199,10 @@ export const pickMartin2Direction = (
     return bestSpace?.direction ?? directionToTail(state, size);
   }
 
-  /* ── Codex 5-3: shortestSafePath für pathProgress ── */
-  let shortestSafePath: number | null = null;
-  for (const ev of safeEvaluations) {
-    if (ev.pathLength === null) continue;
-    if (shortestSafePath === null || ev.pathLength < shortestSafePath) {
-      shortestSafePath = ev.pathLength;
-    }
-  }
-
-  /* ── Score und beste Richtung wählen ── */
+  /* Score all moves and pick the best */
   let best: { direction: Direction; score: number } | null = null;
   for (const ev of pool) {
-    const s = scoreMove(state, size, ev, shortestSafePath, occupiedRatio);
+    const s = scoreMove(state, size, ev, pressure, fillRatio);
     if (!best || s > best.score) {
       best = { direction: ev.direction, score: s };
     }
