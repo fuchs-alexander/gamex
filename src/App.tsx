@@ -65,6 +65,24 @@ type StandingEntry = {
   gapMs: number | null;
 };
 
+type StatSummary = {
+  min: number;
+  max: number;
+  avg: number;
+};
+
+type BenchmarkResult = {
+  strategy: AutopilotStrategy;
+  label: string;
+  runs: number;
+  scores: number[];
+  fruits: number[];
+  scoreSummary: StatSummary;
+  fruitSummary: StatSummary;
+};
+
+type BenchmarkStatus = "idle" | "running" | "finished";
+
 const PLAYERS: PlayerConfig[] = [
   { id: "blue", label: "Blau", colorClass: "blue", defaultStrategy: "balanced" },
   { id: "red", label: "Rot", colorClass: "red", defaultStrategy: "aggressive" },
@@ -75,6 +93,8 @@ const PLAYERS: PlayerConfig[] = [
 ];
 
 const PLAYER_IDS = PLAYERS.map((player) => player.id);
+const BENCHMARK_RUNS = PLAYER_IDS.length;
+const BENCHMARK_QUEUE = STRATEGIES.map((strategy) => strategy.id);
 const MANUAL_PLAYER_ID = "orange";
 const STRATEGY_IDS = new Set(STRATEGIES.map((strategy) => strategy.id));
 const STORAGE_KEY = "snake-strategies-v1";
@@ -248,7 +268,8 @@ const Board = ({
   onStrategyChange,
   manualEnabled,
   onToggleManual,
-  timeoutRemainingMs
+  timeoutRemainingMs,
+  benchmarkActive
 }: {
   player: PlayerConfig;
   state: GameState;
@@ -257,6 +278,7 @@ const Board = ({
   manualEnabled: boolean;
   onToggleManual: (value: boolean) => void;
   timeoutRemainingMs: number;
+  benchmarkActive: boolean;
 }) => {
   const snakeSet = useMemo(() => new Set(state.snake.map(pointKey)), [state.snake]);
   const bodySegmentClasses = useMemo(
@@ -275,7 +297,8 @@ const Board = ({
     ? pointKey(state.lastSpawnedObstacle)
     : null;
 
-  const manualMode = player.id === MANUAL_PLAYER_ID && manualEnabled;
+  const manualMode = player.id === MANUAL_PLAYER_ID && manualEnabled && !benchmarkActive;
+  const statusLabel = benchmarkActive ? "Benchmark" : manualMode ? "Manuell" : statusText(state);
 
   return (
     <section className={`lane ${player.colorClass}`}>
@@ -286,7 +309,7 @@ const Board = ({
           value={strategy}
           onChange={(event) => onStrategyChange(event.target.value as AutopilotStrategy)}
           aria-label={`Strategie fuer ${player.label}`}
-          disabled={manualMode}
+          disabled={manualMode || benchmarkActive}
         >
           {STRATEGIES.map((option) => (
             <option key={option.id} value={option.id}>
@@ -354,13 +377,14 @@ const Board = ({
               type="checkbox"
               checked={manualEnabled}
               onChange={(event) => onToggleManual(event.target.checked)}
+              disabled={benchmarkActive}
             />
             Manuell steuern
           </label>
         ) : (
           <div />
         )}
-        <div className="status">{manualMode ? "Manuell" : statusText(state)}</div>
+        <div className="status">{statusLabel}</div>
       </div>
     </section>
   );
@@ -399,6 +423,19 @@ const createLapTimes = (): LapTimes =>
     return acc;
   }, {} as LapTimes);
 
+const summarizeValues = (values: number[]): StatSummary => {
+  if (values.length === 0) {
+    return { min: 0, max: 0, avg: 0 };
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return { min, max, avg };
+};
+
+const formatAvg = (value: number) => Math.round(value).toString();
+const formatWhole = (value: number) => Math.round(value).toString();
+
 export default function App() {
   const [match, setMatch] = useState<MatchState>(() =>
     PLAYERS.reduce<MatchState>((acc, player) => {
@@ -420,11 +457,20 @@ export default function App() {
   const [started, setStarted] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [manualEnabled, setManualEnabled] = useState(false);
+  const [benchmarkStatus, setBenchmarkStatus] = useState<BenchmarkStatus>("idle");
+  const [benchmarkIndex, setBenchmarkIndex] = useState(0);
+  const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkResult[]>([]);
+  const benchmarkRunRef = useRef<AutopilotStrategy | null>(null);
+  const benchmarkSettingsRef = useRef<{
+    strategies: Record<string, AutopilotStrategy>;
+    manualEnabled: boolean;
+  } | null>(null);
   const matchStartRef = useRef<number>(0);
   const simTimeRef = useRef<number>(0);
 
   const running = PLAYER_IDS.some((player) => match[player].status === "running");
   const allGameover = PLAYER_IDS.every((player) => match[player].status === "gameover");
+  const benchmarkActive = benchmarkStatus === "running";
 
   const lapLeaders = useMemo(() => {
     const leaders = new Map<number, number>();
@@ -483,6 +529,16 @@ export default function App() {
     }));
   }, [endTimes, lapTimes, strategies]);
 
+  const benchmarkBest = useMemo(() => {
+    if (benchmarkResults.length === 0) {
+      return null;
+    }
+    return benchmarkResults.reduce((best, current) => {
+      if (!best) return current;
+      return current.scoreSummary.avg > best.scoreSummary.avg ? current : best;
+    }, null as BenchmarkResult | null);
+  }, [benchmarkResults]);
+
   const getSimNowForPlayer = (playerId: string) => {
     const endTotalMs = endTimes[playerId];
     if (endTotalMs !== null) {
@@ -499,8 +555,8 @@ export default function App() {
     return Math.max(0, timeoutMs - Math.max(0, now - lastEat));
   };
 
-  const handleStart = (manualDirection?: Direction) => {
-    if (running) {
+  const handleStart = (manualDirection?: Direction, forceReset = false) => {
+    if (running && !forceReset) {
       return;
     }
 
@@ -531,30 +587,79 @@ export default function App() {
         lastEatSimTime: now
       });
 
-      if (allGameover) {
-        const fresh = PLAYERS.reduce<MatchState>((acc, player) => {
-          acc[player.id] = createInitialState(GRID_SIZE, OBSTACLE_COUNT);
-          return acc;
-        }, {} as MatchState);
-        return PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
-          const startedState = initState(fresh[playerId]);
+      const buildMatch = (source: MatchState) =>
+        PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
+          const startedState = initState(source[playerId]);
           acc[playerId] =
             playerId === MANUAL_PLAYER_ID
               ? applyManualDirection(startedState)
               : startedState;
           return acc;
         }, {} as MatchState);
+
+      const shouldReset = forceReset || allGameover;
+      if (shouldReset) {
+        const fresh = PLAYERS.reduce<MatchState>((acc, player) => {
+          acc[player.id] = createInitialState(GRID_SIZE, OBSTACLE_COUNT);
+          return acc;
+        }, {} as MatchState);
+        return buildMatch(fresh);
       }
 
-      return PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
-        const startedState = initState(current[playerId]);
-        acc[playerId] =
-          playerId === MANUAL_PLAYER_ID
-            ? applyManualDirection(startedState)
-            : startedState;
-        return acc;
-      }, {} as MatchState);
+      return buildMatch(current);
     });
+  };
+
+  const setAllStrategies = (strategy: AutopilotStrategy) => {
+    setStrategies(
+      PLAYER_IDS.reduce<Record<string, AutopilotStrategy>>((acc, playerId) => {
+        acc[playerId] = strategy;
+        return acc;
+      }, {} as Record<string, AutopilotStrategy>)
+    );
+  };
+
+  const restoreBenchmarkSettings = () => {
+    const saved = benchmarkSettingsRef.current;
+    if (!saved) {
+      return;
+    }
+    setStrategies(saved.strategies);
+    setManualEnabled(saved.manualEnabled);
+  };
+
+  const startBenchmarkStrategy = (strategy: AutopilotStrategy) => {
+    benchmarkRunRef.current = strategy;
+    setAllStrategies(strategy);
+    handleStart(undefined, true);
+  };
+
+  const startBenchmark = () => {
+    if (benchmarkStatus === "running") {
+      return;
+    }
+    benchmarkSettingsRef.current = { strategies, manualEnabled };
+    setBenchmarkResults([]);
+    setBenchmarkIndex(0);
+    setBenchmarkStatus("running");
+    setManualEnabled(false);
+
+    const firstStrategy = BENCHMARK_QUEUE[0];
+    if (!firstStrategy) {
+      setBenchmarkStatus("finished");
+      restoreBenchmarkSettings();
+      return;
+    }
+    startBenchmarkStrategy(firstStrategy);
+  };
+
+  const stopBenchmark = () => {
+    if (benchmarkStatus !== "running") {
+      return;
+    }
+    benchmarkRunRef.current = null;
+    setBenchmarkStatus("idle");
+    restoreBenchmarkSettings();
   };
 
   useEffect(() => {
@@ -570,7 +675,7 @@ export default function App() {
       setMatch((current) => {
         const nextState = PLAYER_IDS.reduce<MatchState>((acc, playerId) => {
           const strategy = strategies[playerId] ?? DEFAULT_STRATEGIES[playerId];
-          const manual = playerId === MANUAL_PLAYER_ID && manualEnabled;
+          const manual = playerId === MANUAL_PLAYER_ID && manualEnabled && !benchmarkActive;
           const lastEat = current[playerId].lastEatSimTime ?? now;
           const elapsed = Math.max(0, now - lastEat);
           const timeoutMs = getTimeoutMs(current[playerId].fruitsEaten);
@@ -663,10 +768,10 @@ export default function App() {
     }, interval);
 
     return () => window.clearInterval(timer);
-  }, [manualEnabled, running, speed, strategies]);
+  }, [benchmarkActive, manualEnabled, running, speed, strategies]);
 
   useEffect(() => {
-    if (!manualEnabled) {
+    if (!manualEnabled || benchmarkActive) {
       return;
     }
 
@@ -704,10 +809,48 @@ export default function App() {
 
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [manualEnabled, started]);
+  }, [benchmarkActive, manualEnabled, started]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (benchmarkStatus !== "running") {
+      return;
+    }
+    if (!allGameover) {
+      return;
+    }
+    const strategy = benchmarkRunRef.current;
+    if (!strategy) {
+      return;
+    }
+
+    const scores = PLAYER_IDS.map((playerId) => match[playerId].score);
+    const fruits = PLAYER_IDS.map((playerId) => match[playerId].fruitsEaten);
+    const result: BenchmarkResult = {
+      strategy,
+      label: STRATEGY_LABELS[strategy],
+      runs: scores.length,
+      scores,
+      fruits,
+      scoreSummary: summarizeValues(scores),
+      fruitSummary: summarizeValues(fruits)
+    };
+
+    setBenchmarkResults((prev) => [...prev, result]);
+
+    const nextIndex = benchmarkIndex + 1;
+    benchmarkRunRef.current = null;
+    if (nextIndex < BENCHMARK_QUEUE.length) {
+      setBenchmarkIndex(nextIndex);
+      startBenchmarkStrategy(BENCHMARK_QUEUE[nextIndex]);
+    } else {
+      setBenchmarkStatus("finished");
+      setBenchmarkIndex(nextIndex);
+      restoreBenchmarkSettings();
+    }
+  }, [allGameover, benchmarkIndex, benchmarkStatus, match]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || benchmarkActive) {
       return;
     }
     try {
@@ -715,7 +858,7 @@ export default function App() {
     } catch {
       return;
     }
-  }, [strategies]);
+  }, [benchmarkActive, strategies]);
 
   useEffect(() => {
     const lists = document.querySelectorAll<HTMLDivElement>(".lap-list");
@@ -723,6 +866,19 @@ export default function App() {
       list.scrollTop = list.scrollHeight;
     });
   }, [lapTimes]);
+
+  const benchmarkStatusLabel =
+    benchmarkStatus === "running"
+      ? "Laeuft"
+      : benchmarkStatus === "finished"
+        ? "Fertig"
+        : "Bereit";
+  const benchmarkCurrentStrategy =
+    benchmarkStatus === "running" ? BENCHMARK_QUEUE[benchmarkIndex] ?? null : null;
+  const benchmarkProgressLabel =
+    benchmarkStatus === "running"
+      ? `${benchmarkIndex + 1}/${BENCHMARK_QUEUE.length}`
+      : "--";
 
   return (
     <div className="app">
@@ -758,7 +914,7 @@ export default function App() {
         <button
           className="control primary"
           onClick={() => handleStart()}
-          disabled={running}
+          disabled={running || benchmarkActive}
         >
           {allGameover ? "Neustart" : "Start"}
         </button>
@@ -778,11 +934,94 @@ export default function App() {
               manualEnabled={manualEnabled}
               onToggleManual={setManualEnabled}
               timeoutRemainingMs={getTimeoutRemainingMs(player.id)}
+              benchmarkActive={benchmarkActive}
             />
           ))}
         </div>
 
         <aside className="side">
+          <section className="panel">
+            <div className="panel-title">Benchmark</div>
+            <div className="benchmark-status">
+              Status: <span className={`benchmark-status-pill ${benchmarkStatus}`}>{benchmarkStatusLabel}</span>
+            </div>
+            <div className="benchmark-controls">
+              <button
+                className="control primary"
+                type="button"
+                onClick={startBenchmark}
+                disabled={benchmarkStatus === "running"}
+              >
+                Benchmark starten
+              </button>
+              <button
+                className="control"
+                type="button"
+                onClick={stopBenchmark}
+                disabled={benchmarkStatus !== "running"}
+              >
+                Stop
+              </button>
+              <button
+                className="control"
+                type="button"
+                onClick={() => setBenchmarkResults([])}
+                disabled={benchmarkStatus === "running" || benchmarkResults.length === 0}
+              >
+                Ergebnisse leeren
+              </button>
+            </div>
+            <div className="benchmark-progress">
+              {benchmarkCurrentStrategy ? (
+                <>
+                  Modell: {STRATEGY_LABELS[benchmarkCurrentStrategy]} ({benchmarkProgressLabel})
+                </>
+              ) : (
+                <>
+                  Modelle: {BENCHMARK_QUEUE.length} · Durchlaeufe: {BENCHMARK_RUNS}
+                </>
+              )}
+            </div>
+
+            {benchmarkResults.length === 0 ? (
+              <div className="benchmark-empty">Noch keine Ergebnisse.</div>
+            ) : (
+              <div className="benchmark-table">
+                <div className="benchmark-row benchmark-header">
+                  <span>Modell</span>
+                  <span>P Ø</span>
+                  <span>P Min</span>
+                  <span>P Max</span>
+                  <span>F Ø</span>
+                  <span>F Min</span>
+                  <span>F Max</span>
+                </div>
+                {benchmarkResults.map((result) => (
+                  <div
+                    key={result.strategy}
+                    className={`benchmark-row ${
+                      benchmarkBest?.strategy === result.strategy ? "best" : ""
+                    }`}
+                  >
+                    <span className="benchmark-model">{result.label}</span>
+                    <span>{formatAvg(result.scoreSummary.avg)}</span>
+                    <span>{formatWhole(result.scoreSummary.min)}</span>
+                    <span>{formatWhole(result.scoreSummary.max)}</span>
+                    <span>{formatAvg(result.fruitSummary.avg)}</span>
+                    <span>{formatWhole(result.fruitSummary.min)}</span>
+                    <span>{formatWhole(result.fruitSummary.max)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {benchmarkBest ? (
+              <div className="benchmark-best">
+                Bestes Modell (Ø Punkte): {benchmarkBest.label}
+              </div>
+            ) : null}
+          </section>
+
           <section className="panel">
             <div className="panel-title">Bestenliste</div>
             <div className="standings">

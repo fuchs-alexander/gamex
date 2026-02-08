@@ -549,6 +549,93 @@
   color: #4b5f52;
 }
 
+.benchmark-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #2f3d33;
+}
+
+.benchmark-status-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #c7d3c2;
+  background: #f1f4ef;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.benchmark-status-pill.running {
+  background: #21452b;
+  color: #ffffff;
+  border-color: #21452b;
+}
+
+.benchmark-status-pill.finished {
+  background: #dfe8db;
+  color: #21452b;
+  border-color: #c7d3c2;
+}
+
+.benchmark-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.benchmark-progress {
+  font-size: 12px;
+  color: #3e4b43;
+}
+
+.benchmark-empty {
+  font-size: 12px;
+  color: #6a7a6f;
+}
+
+.benchmark-table {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: #2f3d33;
+}
+
+.benchmark-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) repeat(6, minmax(0, 0.6fr));
+  gap: 6px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 4px;
+}
+
+.benchmark-row.best {
+  background: #e7f0e5;
+  border-radius: 6px;
+}
+
+.benchmark-header {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #647063;
+}
+
+.benchmark-model {
+  font-family: "Space Grotesk", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.benchmark-best {
+  font-size: 12px;
+  font-weight: 600;
+  color: #21452b;
+}
+
 .standings {
   display: grid;
   gap: 6px;

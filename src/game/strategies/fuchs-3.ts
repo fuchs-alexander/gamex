@@ -32,9 +32,9 @@ export const pickFuchs3Direction = (
     return bestSpace?.direction ?? null;
   }
 
-  const t = Math.max(0, Math.min(1, (occupiedRatio - 0.40) / 0.30));
-  const spaceW = 0.40 - 0.12 * t;
-  const foodW = 0.20 + 0.15 * t;
+  const t = Math.max(0, Math.min(1, (occupiedRatio - 0.50) / 0.25));
+  const spaceW = 0.40 - 0.10 * t;
+  const foodW = 0.20 + 0.12 * t;
 
   let bestScore = -Infinity;
   let bestDir: Direction | null = null;
