@@ -50,6 +50,9 @@ export const wrapPoint = (point: Point, size: number): Point => ({
   y: (point.y + size) % size
 });
 
+const isInnerPoint = (point: Point, size: number): boolean =>
+  point.x > 0 && point.x < size - 1 && point.y > 0 && point.y < size - 1;
+
 const orthogonalNeighbors = (point: Point, size: number): Point[] => [
   wrapPoint({ x: point.x + 1, y: point.y }, size),
   wrapPoint({ x: point.x - 1, y: point.y }, size),
@@ -109,6 +112,27 @@ const createsAdditionalDeadEnds = (
   return deadEndDelta > 0;
 };
 
+const firstObstacleCandidate = (options: Point[], size: number): Point => {
+  const center = (size - 1) / 2;
+  return options.reduce((best, current) => {
+    const bestDist = Math.abs(best.x - center) + Math.abs(best.y - center);
+    const currentDist = Math.abs(current.x - center) + Math.abs(current.y - center);
+    if (currentDist < bestDist) {
+      return current;
+    }
+    if (currentDist > bestDist) {
+      return best;
+    }
+    if (current.y < best.y) {
+      return current;
+    }
+    if (current.y > best.y) {
+      return best;
+    }
+    return current.x < best.x ? current : best;
+  });
+};
+
 export const spawnFood = (snake: Point[], size: number, rng: Rng): Point => {
   const occupied = new Set(snake.map(pointKey));
   const options: Point[] = [];
@@ -165,9 +189,10 @@ export const spawnObstacles = (
     const options: Point[] = [];
     for (let y = 0; y < size; y += 1) {
       for (let x = 0; x < size; x += 1) {
-        const key = `${x},${y}`;
-        if (!occupied.has(key)) {
-          options.push({ x, y });
+        const point = { x, y };
+        const key = pointKey(point);
+        if (!occupied.has(key) && isInnerPoint(point, size)) {
+          options.push(point);
         }
       }
     }
@@ -183,8 +208,10 @@ export const spawnObstacles = (
       break;
     }
 
-    const index = Math.floor(rng() * safeOptions.length);
-    const pick = safeOptions[Math.min(index, safeOptions.length - 1)];
+    const pick =
+      i === 0
+        ? firstObstacleCandidate(safeOptions, size)
+        : safeOptions[Math.min(Math.floor(rng() * safeOptions.length), safeOptions.length - 1)];
     obstacles.push(pick);
     occupied.add(pointKey(pick));
   }
@@ -202,9 +229,10 @@ export const spawnObstacle = (
 
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      const key = `${x},${y}`;
-      if (!occupied.has(key)) {
-        options.push({ x, y });
+      const point = { x, y };
+      const key = pointKey(point);
+      if (!occupied.has(key) && isInnerPoint(point, size)) {
+        options.push(point);
       }
     }
   }
@@ -236,12 +264,13 @@ export const createInitialState = (
     { x: mid - 2, y: mid }
   ];
 
-  const obstacles = spawnObstacles(snake, size, obstacleCount, rng);
+  const initialFood: Point = { x: mid, y: Math.max(1, mid - 3) };
+  const obstacles = spawnObstacles([...snake, initialFood], size, obstacleCount, rng);
 
   return {
     snake,
     direction: "right",
-    food: spawnFood([...snake, ...obstacles], size, rng),
+    food: initialFood,
     obstacles,
     lastSpawnedObstacle: null,
     score: 0,

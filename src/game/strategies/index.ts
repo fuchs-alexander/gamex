@@ -14,6 +14,7 @@ import { pickMartinDirection } from "./martin";
 import { pickFuchs2Direction } from "./fuchs-2";
 import { pickMartin2Direction } from "./martin2";
 import { pickForge3Direction } from "./forge-3";
+import { pickFuchs3Direction } from "./fuchs-3";
 
 export const STRATEGIES = [
   { id: "balanced", label: "Balanced" },
@@ -30,7 +31,8 @@ export const STRATEGIES = [
   { id: "martin", label: "Martin" },
   { id: "fuchs-2", label: "Fuchs 2" },
   { id: "martin2", label: "Martin Hulus 2" },
-  { id: "forge-3", label: "Forge 3" }
+  { id: "forge-3", label: "Forge 3" },
+  { id: "fuchs-3", label: "Fuchs 3" }
 ] as const;
 
 export type AutopilotStrategy = (typeof STRATEGIES)[number]["id"];
@@ -65,7 +67,8 @@ const strategyMap: Record<
   "martin": pickMartinDirection,
   "fuchs-2": pickFuchs2Direction,
   "martin2": pickMartin2Direction,
-  "forge-3": pickForge3Direction
+  "forge-3": pickForge3Direction,
+  "fuchs-3": pickFuchs3Direction
 };
 
 export const pickAutopilotDirection = (

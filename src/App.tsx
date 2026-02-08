@@ -179,6 +179,68 @@ const getFruitPoints = (elapsedMs: number, fruitsEaten: number) => {
   return Math.max(1, Math.round(maxPoints * Math.exp(-elapsedMs / tau)));
 };
 
+const getTailDirection = (snake: GameState["snake"], size: number): Direction => {
+  if (snake.length < 2) {
+    return "right";
+  }
+  const beforeTail = snake[snake.length - 2];
+  const tail = snake[snake.length - 1];
+  const dx = (tail.x - beforeTail.x + size) % size;
+  const dy = (tail.y - beforeTail.y + size) % size;
+
+  if (dx === 1) return "right";
+  if (dx === size - 1) return "left";
+  if (dy === 1) return "down";
+  return "up";
+};
+
+const getDirectionBetween = (from: { x: number; y: number }, to: { x: number; y: number }, size: number): Direction => {
+  const dx = (to.x - from.x + size) % size;
+  const dy = (to.y - from.y + size) % size;
+
+  if (dx === 1) return "right";
+  if (dx === size - 1) return "left";
+  if (dy === 1) return "down";
+  return "up";
+};
+
+const getBodySegmentClasses = (
+  snake: GameState["snake"],
+  size: number
+): Record<string, string> => {
+  const classes: Record<string, string> = {};
+  if (snake.length < 3) {
+    return classes;
+  }
+
+  for (let i = 1; i < snake.length - 1; i += 1) {
+    const current = snake[i];
+    const towardsHead = getDirectionBetween(current, snake[i - 1], size);
+    const towardsTail = getDirectionBetween(current, snake[i + 1], size);
+    const pairKey = [towardsHead, towardsTail].sort().join("-");
+
+    let segmentClass = "";
+    if (pairKey === "left-right") {
+      segmentClass = "segment-left-right";
+    } else if (pairKey === "down-up") {
+      segmentClass = "segment-up-down";
+    } else if (pairKey === "right-up") {
+      segmentClass = "segment-up-right";
+    } else if (pairKey === "down-right") {
+      segmentClass = "segment-right-down";
+    } else if (pairKey === "down-left") {
+      segmentClass = "segment-down-left";
+    } else if (pairKey === "left-up") {
+      segmentClass = "segment-left-up";
+    }
+    if (segmentClass) {
+      classes[pointKey(current)] = segmentClass;
+    }
+  }
+
+  return classes;
+};
+
 const Board = ({
   player,
   state,
@@ -197,7 +259,13 @@ const Board = ({
   timeoutRemainingMs: number;
 }) => {
   const snakeSet = useMemo(() => new Set(state.snake.map(pointKey)), [state.snake]);
+  const bodySegmentClasses = useMemo(
+    () => getBodySegmentClasses(state.snake, GRID_SIZE),
+    [state.snake]
+  );
   const headKey = pointKey(state.snake[0]);
+  const tailKey = pointKey(state.snake[state.snake.length - 1]);
+  const tailDirection = getTailDirection(state.snake, GRID_SIZE);
   const foodKey = pointKey(state.food);
   const obstacleSet = useMemo(
     () => new Set(state.obstacles.map(pointKey)),
@@ -242,6 +310,8 @@ const Board = ({
             const key = `${x},${y}`;
             const isSnake = snakeSet.has(key);
             const isHead = key === headKey;
+            const isTail = key === tailKey;
+            const segmentClass = bodySegmentClasses[key] ?? "";
             const isFood = key === foodKey;
             const isObstacle = obstacleSet.has(key);
             const isNewestObstacle = newestObstacleKey === key;
@@ -250,6 +320,9 @@ const Board = ({
               "cell",
               isSnake ? "snake" : "",
               isHead ? "head" : "",
+              isTail ? "tail" : "",
+              isTail ? `tail-${tailDirection}` : "",
+              segmentClass,
               isFood ? "food" : "",
               isObstacle ? "obstacle" : "",
               isNewestObstacle ? "fresh" : "",

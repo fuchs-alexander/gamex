@@ -16,307 +16,217 @@ import {
 } from "./utils";
 
 
-// --- Lokale Helpers ---
+// --- Hamiltonian Cycle (Zigzag, cached) ---
 
-const directionVectors: Record<Direction, Point> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 }
+let cachedSize = 0;
+let cachedCycleIndex: Map<string, number> | null = null;
+
+const buildCycleIndex = (size: number): Map<string, number> => {
+  if (cachedCycleIndex && cachedSize === size) return cachedCycleIndex;
+
+  const index = new Map<string, number>();
+  let step = 0;
+  for (let row = 0; row < size; row++) {
+    if (row % 2 === 0) {
+      for (let col = 0; col < size; col++) {
+        index.set(pointKey({ x: col, y: row }), step++);
+      }
+    } else {
+      for (let col = size - 1; col >= 0; col--) {
+        index.set(pointKey({ x: col, y: row }), step++);
+      }
+    }
+  }
+  cachedSize = size;
+  cachedCycleIndex = index;
+  return index;
 };
 
-const neighborPoints = (point: Point, size: number): Point[] =>
-  directions.map((dir) =>
-    wrapPoint({ x: point.x + directionVectors[dir].x, y: point.y + directionVectors[dir].y }, size)
-  );
+const cycleDist = (from: number, to: number, total: number): number =>
+  (to - from + total) % total;
 
-const compactness = (pos: Point, size: number, blocked: Set<string>): number => {
+
+// --- Augmented Evaluation ---
+
+type AugEval = MoveEvaluation & {
+  immediateExits: number;
+  compactness: number;
+  pockets: number;
+  hcDist: number;
+};
+
+const countExits = (
+  head: Point,
+  snake: Point[],
+  obstacles: Point[],
+  size: number
+): number => {
+  const blocked = new Set([
+    ...snake.slice(0, -1).map(pointKey),
+    ...obstacles.map(pointKey)
+  ]);
+  let exits = 0;
+  for (const dir of directions) {
+    const n = wrapPoint(movePoint(head, dir), size);
+    if (!blocked.has(pointKey(n))) exits++;
+  }
+  return exits;
+};
+
+const getCompactness = (pos: Point, size: number, blocked: Set<string>): number => {
   let count = 0;
-  for (const n of neighborPoints(pos, size)) {
-    if (blocked.has(pointKey(n))) {
-      count++;
-    }
+  for (const dir of directions) {
+    const n = wrapPoint(movePoint(pos, dir), size);
+    if (blocked.has(pointKey(n))) count++;
   }
   return count;
 };
 
-const countSmallPockets = (
-  nextHead: Point,
-  size: number,
-  blocked: Set<string>
-): number => {
-  const freeNeighbors = neighborPoints(nextHead, size).filter(
-    (n) => !blocked.has(pointKey(n))
-  );
-
+const countPockets = (pos: Point, size: number, blocked: Set<string>): number => {
   let pockets = 0;
-  for (const fn of freeNeighbors) {
-    const regionSize = floodFillCount(fn, size, blocked);
-    if (regionSize < 4) {
+  for (const dir of directions) {
+    const n = wrapPoint(movePoint(pos, dir), size);
+    if (!blocked.has(pointKey(n)) && floodFillCount(n, size, blocked) < 4) {
       pockets++;
     }
   }
   return pockets;
 };
 
-const directionContinuity = (direction: Direction, currentDirection: Direction): number =>
-  direction === currentDirection ? 1 : 0;
 
-type AreaEvaluation = MoveEvaluation & {
-  compactness: number;
-  pockets: number;
-  continuity: number;
-  nextHead: Point;
+// --- Phase Scoring ---
+
+const scoreEarly = (ev: AugEval, snakeLen: number, urgency: number): number => {
+  let s = 0;
+  s += ev.safe ? 10_000 : -5_000;
+  s += ev.space * 15;
+  s += ev.immediateExits * 200;
+  if (ev.pathLength !== null) {
+    const foodW = 1 + urgency * 3;
+    s += (1000 / (ev.pathLength + 1)) * foodW;
+  }
+  if (ev.space < snakeLen) s -= 2000;
+  if (ev.hcDist > 0) s += 50;
+  return s;
 };
 
-const evaluateAreaMove = (
-  state: GameState,
-  size: number,
-  evaluation: MoveEvaluation
-): AreaEvaluation => {
-  const head = state.snake[0];
-  const nextHead = wrapPoint(movePoint(head, evaluation.direction), size);
-
-  const nextSnake = [nextHead, ...state.snake.slice(0, -1)];
-  const blocked = new Set<string>([
-    ...nextSnake.map(pointKey),
-    ...state.obstacles.map(pointKey)
-  ]);
-
-  return {
-    ...evaluation,
-    compactness: compactness(nextHead, size, blocked),
-    pockets: countSmallPockets(nextHead, size, blocked),
-    continuity: directionContinuity(evaluation.direction, state.direction),
-    nextHead
-  };
-};
-
-
-// --- Phase 1: Ultra-Aggressiv (0-69 Fruechte) ---
-
-const scorePhase1Move = (
-  evaluation: MoveEvaluation,
-  snakeLength: number,
+const scoreMid = (
+  ev: AugEval,
+  snakeLen: number,
+  shortest: number | null,
   urgency: number
 ): number => {
-  let score = 0;
+  let s = 0;
+  s += ev.safe ? 12_000 : -10_000;
+  s += ev.space * 20;
+  s += ev.immediateExits * 300;
+  s += ev.compactness * 120;
+  s -= ev.pockets * 450;
 
-  // Pfad dominiert alles
-  const pathWeight = 0.75 + urgency * 0.10; // 0.75 bis 0.85
-  if (evaluation.pathLength !== null) {
-    score += (1 / (evaluation.pathLength + 1)) * pathWeight;
+  if (ev.pathLength !== null) {
+    const progress = shortest !== null
+      ? Math.max(0, shortest / Math.max(1, ev.pathLength))
+      : 0;
+    const foodW = 1 + urgency * 3;
+    s += progress * 600 * foodW;
+    s += (400 / (ev.pathLength + 1)) * foodW;
   }
 
-  // Safety nur als Bonus, kein Penalty
-  if (evaluation.safe) {
-    score += 0.05;
-  }
-
-  // Trap-Schutz: harter Penalty bei zu wenig Space
-  const spaceThreshold = snakeLength < 20 ? snakeLength : snakeLength * 0.5;
-  if (evaluation.space < spaceThreshold) {
-    score -= 0.5;
-  }
-
-  // Space nur als Tiebreaker
-  score += (evaluation.space / (snakeLength * 2 + 1)) * 0.01;
-
-  return score;
+  const crit = Math.max(8, Math.floor(snakeLen * 0.5));
+  if (ev.space < crit) s -= (crit - ev.space) * 300;
+  if (ev.hcDist > 0) s += 250;
+  return s;
 };
 
-
-// --- Phase 2: Balanced (70-179 Fruechte) ---
-
-const scorePhase2Move = (
-  evaluation: MoveEvaluation,
-  minSafePath: number,
-  maxSpace: number,
-  occupiedRatio: number
+const scoreLate = (
+  ev: AugEval,
+  snakeLen: number,
+  shortest: number | null,
+  urgency: number
 ): number => {
-  let score = 0;
+  let s = 0;
+  s += ev.safe ? 15_000 : -15_000;
+  s += ev.space * 25;
+  s += ev.immediateExits * 400;
+  s += ev.compactness * 220;
+  s -= ev.pockets * 700;
 
-  // Safety: starkes Signal
-  if (evaluation.safe) {
-    score += 0.6;
-  } else {
-    score -= 0.3;
-    if (occupiedRatio > 0.4) {
-      score -= 0.2;
-    }
+  if (ev.pathLength !== null) {
+    const progress = shortest !== null
+      ? Math.max(0, shortest / Math.max(1, ev.pathLength))
+      : 0;
+    const foodW = 1 + urgency * 4;
+    s += progress * 400 * foodW;
+    s += (250 / (ev.pathLength + 1)) * foodW;
   }
 
-  // Pfad mit Toleranz-System
-  if (evaluation.pathLength !== null && minSafePath < Infinity) {
-    const pathDelta = evaluation.pathLength - minSafePath;
-    const tolerance = occupiedRatio < 0.3 ? 2 : occupiedRatio < 0.5 ? 3 : 5;
-    if (pathDelta <= tolerance) {
-      score += (0.25 - pathDelta * 0.04);
-    }
-  }
+  const crit = Math.max(10, Math.floor(snakeLen * 0.8));
+  if (ev.space < crit) s -= (crit - ev.space) * 500;
 
-  // Space normalisiert
-  if (maxSpace > 0) {
-    score += (evaluation.space / maxSpace) * 0.20;
+  // HC strongly preferred in late game for systematic board filling
+  if (ev.hcDist > 0) {
+    s += 600;
+    if (ev.hcDist <= 3) s += 300;
   }
-
-  return score;
+  return s;
 };
 
 
-// --- Phase 3: Space-Filling (180+ Fruechte) ---
-
-const scorePhase3Move = (
-  eval_: AreaEvaluation,
-  minPath: number,
-  maxSpace: number,
-  occupiedRatio: number
-): number => {
-  let score = 0;
-
-  // Safety ist absolutes Muss
-  if (eval_.safe) {
-    score += 1.5;
-  } else {
-    score -= 1.0;
-  }
-
-  // Kompaktheit: starkes Signal fuer Wall/Body-Hugging
-  score += eval_.compactness * 0.30;
-
-  // Pocket-Penalty: staerker als Fuchs original
-  score -= eval_.pockets * 0.50;
-
-  // Continuity: laengere gerade Segmente = weniger Luecken
-  score += eval_.continuity * 0.15;
-
-  // Space normalisiert
-  if (maxSpace > 0) {
-    score += (eval_.space / maxSpace) * 0.20;
-  }
-
-  // Pfad zum Essen: sehr schwaches Gewicht
-  if (eval_.pathLength !== null && minPath > 0) {
-    const pathDelta = eval_.pathLength - minPath;
-    const tolerance = occupiedRatio < 0.5 ? 3 : 5;
-    if (pathDelta <= tolerance) {
-      score += 0.10 - pathDelta * 0.02;
-    }
-  }
-
-  return score;
-};
-
-
-// --- Hauptfunktion ---
+// --- Main Strategy ---
 
 export const pickFuchs2Direction = (
   state: GameState,
   size: number
 ): Direction | null => {
-  const fruitsEaten = state.fruitsEaten;
-  const snakeLength = state.snake.length;
-  const totalCells = size * size;
-  const occupiedRatio = (snakeLength + state.obstacles.length) / totalCells;
-  const foodReachable = isFoodReachable(state, size);
+  const total = size * size;
+  const head = state.snake[0];
 
-  // Urgency fuer Phase 1: wie nah am Timeout?
-  const timeSinceLastFruit = state.timeSinceLastFruit ?? 0;
-  const timeoutMs = state.timeoutMs ?? 10000;
-  const urgency = Math.min(1, timeSinceLastFruit / timeoutMs);
+  // HC setup
+  const cycleIndex = buildCycleIndex(size);
+  const headIdx = cycleIndex.get(pointKey(head));
 
-  // Phase bestimmen
-  const phase = fruitsEaten < 70 ? 1 : fruitsEaten < 180 ? 2 : 3;
+  const occupiedIndices = new Set<number>();
+  for (let i = 1; i < state.snake.length - 1; i++) {
+    const idx = cycleIndex.get(pointKey(state.snake[i]));
+    if (idx !== undefined) occupiedIndices.add(idx);
+  }
 
-  // Alle Moves evaluieren
-  const evaluations: MoveEvaluation[] = [];
+  let maxSafeDist = total;
+  if (headIdx !== undefined) {
+    for (let d = 1; d < total; d++) {
+      if (occupiedIndices.has((headIdx + d) % total)) {
+        maxSafeDist = d;
+        break;
+      }
+    }
+  }
+
+  // Urgency: wie nah am Timeout?
+  const urgency =
+    state.timeSinceLastFruit !== undefined &&
+    state.timeoutMs !== undefined &&
+    state.timeoutMs > 0
+      ? Math.min(1, state.timeSinceLastFruit / state.timeoutMs)
+      : 0;
+
+  // Evaluate all directions
+  const rawEvals: MoveEvaluation[] = [];
   for (const dir of directions) {
-    const evaluation = evaluateMove(state, size, dir);
-    if (evaluation) {
-      evaluations.push(evaluation);
-    }
+    const ev = evaluateMove(state, size, dir);
+    if (ev) rawEvals.push(ev);
   }
 
-  if (evaluations.length === 0) {
-    return directionToTail(state, size);
-  }
+  if (rawEvals.length === 0) return directionToTail(state, size);
 
-  // === Phase 1: Ultra-Aggressiv ===
-  if (phase === 1) {
-    if (!foodReachable) {
-      // Max-Space Move statt Tail-Chase (schneller)
-      let bestSpace: MoveEvaluation | null = null;
-      for (const evaluation of evaluations) {
-        if (!bestSpace || evaluation.space > bestSpace.space) {
-          bestSpace = evaluation;
-        }
-      }
-      return bestSpace?.direction ?? null;
-    }
+  // Dead-end filter
+  const minSpace = Math.max(Math.floor(state.snake.length * 0.3), 8);
+  const viable = rawEvals.filter(e => e.space >= minSpace);
+  const pool = viable.length > 0 ? viable : rawEvals;
 
-    let bestScore = -Infinity;
-    let bestDirection: Direction | null = null;
-    for (const evaluation of evaluations) {
-      const score = scorePhase1Move(evaluation, snakeLength, urgency);
-      if (score > bestScore) {
-        bestScore = score;
-        bestDirection = evaluation.direction;
-      }
-    }
-    return bestDirection;
-  }
-
-  // === Phase 2 & 3: Dead-End-Filter ===
-  const minSpace = Math.max(Math.floor(snakeLength * 0.3), 10);
-  const viable = evaluations.filter((e) => e.space >= minSpace);
-  const pool = viable.length > 0 ? viable : evaluations;
-
-  // === Phase 2: Balanced ===
-  if (phase === 2) {
-    if (!foodReachable) {
-      // Tail-Chase (natuerlicher Zyklus)
-      const tailDir = directionToTail(state, size);
-      if (tailDir && pool.some((e) => e.direction === tailDir)) {
-        return tailDir;
-      }
-      let best: MoveEvaluation | null = null;
-      for (const e of pool) {
-        if (!best || e.space > best.space) best = e;
-      }
-      return best?.direction ?? directionToTail(state, size);
-    }
-
-    // Safe-Pool bevorzugen
-    const safePool = pool.filter((e) => e.safe);
-    const scoringPool = safePool.length > 0 ? safePool : pool;
-
-    let minSafePath = Infinity;
-    let maxSpace = 0;
-    for (const e of scoringPool) {
-      if (e.pathLength !== null && e.pathLength < minSafePath) minSafePath = e.pathLength;
-      if (e.space > maxSpace) maxSpace = e.space;
-    }
-
-    let bestScore = -Infinity;
-    let bestDir: Direction | null = null;
-    for (const e of scoringPool) {
-      const score = scorePhase2Move(e, minSafePath, maxSpace, occupiedRatio);
-      if (score > bestScore) {
-        bestScore = score;
-        bestDir = e.direction;
-      }
-    }
-    return bestDir ?? directionToTail(state, size);
-  }
-
-  // === Phase 3: Space-Filling ===
-
-  // Food unreachable: Schwanz jagen
-  if (!foodReachable) {
+  // Food unreachable: chase tail or max space
+  if (!isFoodReachable(state, size)) {
     const tailDir = directionToTail(state, size);
-    if (tailDir && pool.some((e) => e.direction === tailDir)) {
-      return tailDir;
-    }
+    if (tailDir && pool.some(e => e.direction === tailDir)) return tailDir;
     let best: MoveEvaluation | null = null;
     for (const e of pool) {
       if (!best || e.space > best.space) best = e;
@@ -324,28 +234,61 @@ export const pickFuchs2Direction = (
     return best?.direction ?? directionToTail(state, size);
   }
 
-  // Area-Evaluierung mit Kompaktheit, Pocket-Erkennung und Continuity
-  const areaEvals = pool.map((e) => evaluateAreaMove(state, size, e));
+  // Augment evaluations
+  const evals: AugEval[] = pool.map(ev => {
+    const nextHead = wrapPoint(movePoint(head, ev.direction), size);
+    const nextSnake = [nextHead, ...state.snake.slice(0, -1)];
+    const blocked = new Set([
+      ...nextSnake.map(pointKey),
+      ...state.obstacles.map(pointKey)
+    ]);
 
-  // Safe bevorzugen
-  const safePool = areaEvals.filter((e) => e.safe);
-  const scoringPool = safePool.length > 0 ? safePool : areaEvals;
+    let hcDist = 0;
+    if (headIdx !== undefined) {
+      const nextIdx = cycleIndex.get(pointKey(nextHead));
+      if (nextIdx !== undefined) {
+        const dist = cycleDist(headIdx, nextIdx, total);
+        if (dist > 0 && dist <= maxSafeDist) {
+          hcDist = dist;
+        }
+      }
+    }
 
-  let minPath = Infinity;
-  let maxSpace = 0;
-  for (const e of scoringPool) {
-    if (e.pathLength !== null && e.pathLength < minPath) minPath = e.pathLength;
-    if (e.space > maxSpace) maxSpace = e.space;
+    return {
+      ...ev,
+      immediateExits: countExits(nextHead, nextSnake, state.obstacles, size),
+      compactness: getCompactness(nextHead, size, blocked),
+      pockets: countPockets(nextHead, size, blocked),
+      hcDist
+    };
+  });
+
+  // Shortest safe path (for progress ratio)
+  let shortestSafe: number | null = null;
+  for (const e of evals) {
+    if (e.safe && e.pathLength !== null) {
+      if (shortestSafe === null || e.pathLength < shortestSafe) {
+        shortestSafe = e.pathLength;
+      }
+    }
   }
-  if (minPath === Infinity) minPath = 1;
+
+  // Score by phase
+  const snakeLen = state.snake.length;
+  const fruits = state.fruitsEaten;
+  const scoreFn = fruits < 60
+    ? (ev: AugEval) => scoreEarly(ev, snakeLen, urgency)
+    : fruits < 150
+      ? (ev: AugEval) => scoreMid(ev, snakeLen, shortestSafe, urgency)
+      : (ev: AugEval) => scoreLate(ev, snakeLen, shortestSafe, urgency);
 
   let bestScore = -Infinity;
   let bestDir: Direction | null = null;
-  for (const e of scoringPool) {
-    const score = scorePhase3Move(e, minPath, maxSpace, occupiedRatio);
+  for (const ev of evals) {
+    const score = scoreFn(ev);
     if (score > bestScore) {
       bestScore = score;
-      bestDir = e.direction;
+      bestDir = ev.direction;
     }
   }
 
