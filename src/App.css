@@ -604,7 +604,7 @@
 
 .benchmark-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) repeat(6, minmax(0, 0.6fr));
+  grid-template-columns: minmax(0, 1.1fr) repeat(7, minmax(0, 0.6fr));
   gap: 6px;
   align-items: center;
   font-variant-numeric: tabular-nums;
@@ -646,7 +646,7 @@
 
 .standings-row {
   display: grid;
-  grid-template-columns: 10px 28px minmax(0, 1fr) 44px 44px minmax(0, 0.8fr) minmax(0, 0.8fr);
+  grid-template-columns: 10px 36px minmax(0, 1fr) minmax(0, 0.7fr);
   gap: 6px;
   align-items: center;
   padding: 3px 4px;

@@ -60,6 +60,38 @@ const orthogonalNeighbors = (point: Point, size: number): Point[] => [
   wrapPoint({ x: point.x, y: point.y - 1 }, size)
 ];
 
+const wrapDistance = (a: number, b: number, size: number) => {
+  const diff = Math.abs(a - b);
+  return Math.min(diff, size - diff);
+};
+
+const wrappedManhattan = (a: Point, b: Point, size: number) =>
+  wrapDistance(a.x, b.x, size) + wrapDistance(a.y, b.y, size);
+
+const reachableFromHead = (
+  head: Point,
+  size: number,
+  occupied: Set<string>
+): Set<string> => {
+  const seen = new Set<string>();
+  const queue: Point[] = [head];
+  seen.add(pointKey(head));
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const neighbor of orthogonalNeighbors(current, size)) {
+      const key = pointKey(neighbor);
+      if (seen.has(key) || occupied.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      queue.push(neighbor);
+    }
+  }
+
+  return seen;
+};
+
 const freeExitCount = (point: Point, occupied: Set<string>, size: number): number => {
   let exits = 0;
   for (const neighbor of orthogonalNeighbors(point, size)) {
@@ -135,6 +167,7 @@ const firstObstacleCandidate = (options: Point[], size: number): Point => {
 
 export const spawnFood = (snake: Point[], size: number, rng: Rng): Point => {
   const occupied = new Set(snake.map(pointKey));
+  const minFoodDistance = Math.max(4, Math.floor(size * 0.3));
   const options: Point[] = [];
   const safeOptions: Point[] = [];
 
@@ -169,8 +202,46 @@ export const spawnFood = (snake: Point[], size: number, rng: Rng): Point => {
     return { x: -1, y: -1 };
   }
 
-  const index = Math.floor(rng() * pool.length);
-  return pool[Math.min(index, pool.length - 1)];
+  let selectionPool = pool;
+  if (snake.length > 0) {
+    const reachable = reachableFromHead(snake[0], size, occupied);
+    const reachablePool = pool.filter((candidate) => reachable.has(pointKey(candidate)));
+    if (reachablePool.length > 0) {
+      selectionPool = reachablePool;
+    }
+
+    const distantPool = selectionPool.filter(
+      (candidate) => wrappedManhattan(candidate, snake[0], size) >= minFoodDistance
+    );
+    if (distantPool.length > 0) {
+      selectionPool = distantPool;
+    }
+
+    let bestDistance = -1;
+    let bestOptions: Point[] = [];
+    for (const candidate of selectionPool) {
+      let nearest = Number.POSITIVE_INFINITY;
+      for (const segment of snake) {
+        const dist = wrappedManhattan(candidate, segment, size);
+        if (dist < nearest) {
+          nearest = dist;
+        }
+      }
+      if (nearest > bestDistance) {
+        bestDistance = nearest;
+        bestOptions = [candidate];
+      } else if (nearest === bestDistance) {
+        bestOptions.push(candidate);
+      }
+    }
+    if (bestOptions.length > 0) {
+      const index = Math.floor(rng() * bestOptions.length);
+      return bestOptions[Math.min(index, bestOptions.length - 1)];
+    }
+  }
+
+  const index = Math.floor(rng() * selectionPool.length);
+  return selectionPool[Math.min(index, selectionPool.length - 1)];
 };
 
 export const spawnObstacles = (

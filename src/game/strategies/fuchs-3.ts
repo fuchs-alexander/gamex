@@ -32,6 +32,9 @@ export const pickFuchs3Direction = (
     return bestSpace?.direction ?? null;
   }
 
+  const safeEvals = evaluations.filter((e) => e.safe);
+  const pool = safeEvals.length > 0 ? safeEvals : evaluations;
+
   const t = Math.max(0, Math.min(1, (occupiedRatio - 0.50) / 0.25));
   const spaceW = 0.40 - 0.10 * t;
   const foodW = 0.20 + 0.12 * t;
@@ -39,7 +42,7 @@ export const pickFuchs3Direction = (
   let bestScore = -Infinity;
   let bestDir: Direction | null = null;
 
-  for (const ev of evaluations) {
+  for (const ev of pool) {
     let s = 0;
 
     s += (ev.space / (snakeLen * 2)) * spaceW;

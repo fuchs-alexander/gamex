@@ -58,6 +58,8 @@ type StandingEntry = {
   label: string;
   colorClass: string;
   strategyLabel: string;
+  score: number;
+  avgScore: number;
   position: number;
   lap: number;
   totalMs: number;
@@ -77,6 +79,7 @@ type BenchmarkResult = {
   runs: number;
   scores: number[];
   fruits: number[];
+  scoreTotal: number;
   scoreSummary: StatSummary;
   fruitSummary: StatSummary;
 };
@@ -407,15 +410,15 @@ const formatGapWithLead = (ms: number, isLeader: boolean) =>
 
 const formatCountdownSeconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
-const formatMaybeTime = (ms: number | null) =>
-  ms === null ? "--:--.---" : formatTime(ms);
+void ((ms: number | null) =>
+  ms === null ? "--:--.---" : formatTime(ms));
 
-const formatMaybeGap = (ms: number | null, isLeader: boolean) => {
+void ((ms: number | null, isLeader: boolean) => {
   if (ms === null) {
     return "--";
   }
   return formatGapWithLead(ms, isLeader);
-};
+});
 
 const createLapTimes = (): LapTimes =>
   PLAYER_IDS.reduce<LapTimes>((acc, player) => {
@@ -494,6 +497,9 @@ export default function App() {
           ? playerLaps[playerLaps.length - 1].totalMs
           : null;
       const lap = lapTimes[player.id]?.length ?? 0;
+      const score = match[player.id].score;
+      const fruits = match[player.id].fruitsEaten;
+      const avgScore = fruits > 0 ? score / fruits : 0;
       const displayMs = lastLapTotalMs ?? endTimes[player.id] ?? null;
       const totalMs = displayMs ?? Number.POSITIVE_INFINITY;
       return {
@@ -501,6 +507,8 @@ export default function App() {
         label: player.label,
         colorClass: player.colorClass,
         strategyLabel: STRATEGY_LABELS[strategy],
+        score,
+        avgScore,
         lap,
         totalMs,
         displayMs,
@@ -510,10 +518,13 @@ export default function App() {
     });
 
     entries.sort((a, b) => {
-      if (b.lap !== a.lap) {
-        return b.lap - a.lap;
+      if (b.score !== a.score) {
+        return b.score - a.score;
       }
-      return a.totalMs - b.totalMs;
+      if (b.avgScore !== a.avgScore) {
+        return b.avgScore - a.avgScore;
+      }
+      return a.label.localeCompare(b.label);
     });
 
     const leader = entries[0];
@@ -527,7 +538,7 @@ export default function App() {
           ? null
           : Math.abs(entry.displayMs - leaderTotal)
     }));
-  }, [endTimes, lapTimes, strategies]);
+  }, [endTimes, lapTimes, match, strategies]);
 
   const benchmarkBest = useMemo(() => {
     if (benchmarkResults.length === 0) {
@@ -537,6 +548,20 @@ export default function App() {
       if (!best) return current;
       return current.scoreSummary.avg > best.scoreSummary.avg ? current : best;
     }, null as BenchmarkResult | null);
+  }, [benchmarkResults]);
+
+  const benchmarkSorted = useMemo(() => {
+    return [...benchmarkResults].sort((a, b) => {
+      const avgA = Math.round(a.scoreSummary.avg);
+      const avgB = Math.round(b.scoreSummary.avg);
+      if (avgB !== avgA) {
+        return avgB - avgA;
+      }
+      if (b.scoreTotal !== a.scoreTotal) {
+        return b.scoreTotal - a.scoreTotal;
+      }
+      return a.label.localeCompare(b.label);
+    });
   }, [benchmarkResults]);
 
   const getSimNowForPlayer = (playerId: string) => {
@@ -825,12 +850,14 @@ export default function App() {
 
     const scores = PLAYER_IDS.map((playerId) => match[playerId].score);
     const fruits = PLAYER_IDS.map((playerId) => match[playerId].fruitsEaten);
+    const scoreTotal = scores.reduce((sum, value) => sum + value, 0);
     const result: BenchmarkResult = {
       strategy,
       label: STRATEGY_LABELS[strategy],
       runs: scores.length,
       scores,
       fruits,
+      scoreTotal,
       scoreSummary: summarizeValues(scores),
       fruitSummary: summarizeValues(fruits)
     };
@@ -845,7 +872,6 @@ export default function App() {
     } else {
       setBenchmarkStatus("finished");
       setBenchmarkIndex(nextIndex);
-      restoreBenchmarkSettings();
     }
   }, [allGameover, benchmarkIndex, benchmarkStatus, match]);
 
@@ -989,6 +1015,7 @@ export default function App() {
               <div className="benchmark-table">
                 <div className="benchmark-row benchmark-header">
                   <span>Modell</span>
+                  <span>P Sum</span>
                   <span>P Ø</span>
                   <span>P Min</span>
                   <span>P Max</span>
@@ -996,7 +1023,7 @@ export default function App() {
                   <span>F Min</span>
                   <span>F Max</span>
                 </div>
-                {benchmarkResults.map((result) => (
+                {benchmarkSorted.map((result) => (
                   <div
                     key={result.strategy}
                     className={`benchmark-row ${
@@ -1004,6 +1031,7 @@ export default function App() {
                     }`}
                   >
                     <span className="benchmark-model">{result.label}</span>
+                    <span>{formatWhole(result.scoreTotal)}</span>
                     <span>{formatAvg(result.scoreSummary.avg)}</span>
                     <span>{formatWhole(result.scoreSummary.min)}</span>
                     <span>{formatWhole(result.scoreSummary.max)}</span>
@@ -1030,9 +1058,6 @@ export default function App() {
                 <span>Pos</span>
                 <span>Strategie</span>
                 <span>Score</span>
-                <span>Runden</span>
-                <span className="standings-time">Zeit</span>
-                <span className="standings-gap">Abstand</span>
               </div>
               {standings.map((entry) => (
                 <div
@@ -1045,16 +1070,7 @@ export default function App() {
                     {entry.strategyLabel}
                   </span>
                   <span className="standings-score">
-                    {match[entry.id].score}
-                  </span>
-                  <span>{entry.lap}</span>
-                  <span className="standings-time">
-                    {formatMaybeTime(entry.displayMs)}
-                  </span>
-                  <span
-                    className={`standings-gap lap-gap ${entry.position === 1 ? "lead" : ""}`}
-                  >
-                    {formatMaybeGap(entry.gapMs, entry.position === 1)}
+                    {entry.score}
                   </span>
                 </div>
               ))}
