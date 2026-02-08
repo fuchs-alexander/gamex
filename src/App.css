@@ -636,6 +636,19 @@
   color: #21452b;
 }
 
+.benchmark-archive {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.benchmark-archive-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #647063;
+}
+
 .standings {
   display: grid;
   gap: 6px;

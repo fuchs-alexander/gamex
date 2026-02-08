@@ -85,6 +85,16 @@ type BenchmarkResult = {
 };
 
 type BenchmarkStatus = "idle" | "running" | "finished";
+type StrategyOption = { id: AutopilotStrategy; label: string };
+
+const PERMANENT_ARCHIVE_IDS = new Set<AutopilotStrategy>([
+  "combination",
+  "aggressive",
+  "space",
+  "codex-5.2",
+  "opus-4.6",
+  "sonnet-4.5"
+]);
 
 const PLAYERS: PlayerConfig[] = [
   { id: "blue", label: "Blau", colorClass: "blue", defaultStrategy: "balanced" },
@@ -97,7 +107,6 @@ const PLAYERS: PlayerConfig[] = [
 
 const PLAYER_IDS = PLAYERS.map((player) => player.id);
 const BENCHMARK_RUNS = PLAYER_IDS.length;
-const BENCHMARK_QUEUE = STRATEGIES.map((strategy) => strategy.id);
 const MANUAL_PLAYER_ID = "orange";
 const STRATEGY_IDS = new Set(STRATEGIES.map((strategy) => strategy.id));
 const STORAGE_KEY = "snake-strategies-v1";
@@ -268,6 +277,7 @@ const Board = ({
   player,
   state,
   strategy,
+  strategyOptions,
   onStrategyChange,
   manualEnabled,
   onToggleManual,
@@ -277,6 +287,7 @@ const Board = ({
   player: PlayerConfig;
   state: GameState;
   strategy: AutopilotStrategy;
+  strategyOptions: StrategyOption[];
   onStrategyChange: (strategy: AutopilotStrategy) => void;
   manualEnabled: boolean;
   onToggleManual: (value: boolean) => void;
@@ -314,7 +325,7 @@ const Board = ({
           aria-label={`Strategie fuer ${player.label}`}
           disabled={manualMode || benchmarkActive}
         >
-          {STRATEGIES.map((option) => (
+          {strategyOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
             </option>
@@ -540,18 +551,8 @@ export default function App() {
     }));
   }, [endTimes, lapTimes, match, strategies]);
 
-  const benchmarkBest = useMemo(() => {
-    if (benchmarkResults.length === 0) {
-      return null;
-    }
-    return benchmarkResults.reduce((best, current) => {
-      if (!best) return current;
-      return current.scoreSummary.avg > best.scoreSummary.avg ? current : best;
-    }, null as BenchmarkResult | null);
-  }, [benchmarkResults]);
-
-  const benchmarkSorted = useMemo(() => {
-    return [...benchmarkResults].sort((a, b) => {
+  const benchmarkSplit = useMemo(() => {
+    const sorted = [...benchmarkResults].sort((a, b) => {
       const avgA = Math.round(a.scoreSummary.avg);
       const avgB = Math.round(b.scoreSummary.avg);
       if (avgB !== avgA) {
@@ -562,7 +563,65 @@ export default function App() {
       }
       return a.label.localeCompare(b.label);
     });
+    const active = sorted.filter(
+      (entry) =>
+        entry.fruitSummary.max >= 180 && !PERMANENT_ARCHIVE_IDS.has(entry.strategy)
+    );
+    const archived = sorted.filter(
+      (entry) =>
+        entry.fruitSummary.max < 180 || PERMANENT_ARCHIVE_IDS.has(entry.strategy)
+    );
+    return { active, archived };
   }, [benchmarkResults]);
+
+  const archivedStrategyIds = useMemo(
+    () => new Set(benchmarkSplit.archived.map((entry) => entry.strategy)),
+    [benchmarkSplit.archived]
+  );
+
+  const selectableStrategies = useMemo(
+    () =>
+      STRATEGIES.filter(
+        (strategy) =>
+          !PERMANENT_ARCHIVE_IDS.has(strategy.id) &&
+          !archivedStrategyIds.has(strategy.id)
+      ),
+    [archivedStrategyIds]
+  );
+
+  const benchmarkQueue = useMemo(
+    () => selectableStrategies.map((strategy) => strategy.id),
+    [selectableStrategies]
+  );
+
+  useEffect(() => {
+    if (selectableStrategies.length === 0) {
+      return;
+    }
+    const fallback = selectableStrategies[0].id;
+    setStrategies((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const playerId of PLAYER_IDS) {
+        const currentStrategy = current[playerId] ?? DEFAULT_STRATEGIES[playerId];
+        if (!selectableStrategies.some((strategy) => strategy.id === currentStrategy)) {
+          next[playerId] = fallback;
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [selectableStrategies]);
+
+  const benchmarkBest = useMemo(() => {
+    if (benchmarkSplit.active.length === 0) {
+      return null;
+    }
+    return benchmarkSplit.active.reduce((best, current) => {
+      if (!best) return current;
+      return current.scoreSummary.avg > best.scoreSummary.avg ? current : best;
+    }, null as BenchmarkResult | null);
+  }, [benchmarkSplit.active]);
 
   const getSimNowForPlayer = (playerId: string) => {
     const endTotalMs = endTimes[playerId];
@@ -669,7 +728,7 @@ export default function App() {
     setBenchmarkStatus("running");
     setManualEnabled(false);
 
-    const firstStrategy = BENCHMARK_QUEUE[0];
+    const firstStrategy = benchmarkQueue[0];
     if (!firstStrategy) {
       setBenchmarkStatus("finished");
       restoreBenchmarkSettings();
@@ -866,14 +925,14 @@ export default function App() {
 
     const nextIndex = benchmarkIndex + 1;
     benchmarkRunRef.current = null;
-    if (nextIndex < BENCHMARK_QUEUE.length) {
+    if (nextIndex < benchmarkQueue.length) {
       setBenchmarkIndex(nextIndex);
-      startBenchmarkStrategy(BENCHMARK_QUEUE[nextIndex]);
+      startBenchmarkStrategy(benchmarkQueue[nextIndex]);
     } else {
       setBenchmarkStatus("finished");
       setBenchmarkIndex(nextIndex);
     }
-  }, [allGameover, benchmarkIndex, benchmarkStatus, match]);
+  }, [allGameover, benchmarkIndex, benchmarkQueue, benchmarkStatus, match]);
 
   useEffect(() => {
     if (typeof window === "undefined" || benchmarkActive) {
@@ -900,10 +959,10 @@ export default function App() {
         ? "Fertig"
         : "Bereit";
   const benchmarkCurrentStrategy =
-    benchmarkStatus === "running" ? BENCHMARK_QUEUE[benchmarkIndex] ?? null : null;
+    benchmarkStatus === "running" ? benchmarkQueue[benchmarkIndex] ?? null : null;
   const benchmarkProgressLabel =
     benchmarkStatus === "running"
-      ? `${benchmarkIndex + 1}/${BENCHMARK_QUEUE.length}`
+      ? `${benchmarkIndex + 1}/${benchmarkQueue.length}`
       : "--";
 
   return (
@@ -954,6 +1013,7 @@ export default function App() {
               player={player}
               state={match[player.id]}
               strategy={strategies[player.id] ?? player.defaultStrategy}
+              strategyOptions={selectableStrategies}
               onStrategyChange={(value) =>
                 setStrategies((current) => ({ ...current, [player.id]: value }))
               }
@@ -1004,13 +1064,17 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  Modelle: {BENCHMARK_QUEUE.length} · Durchlaeufe: {BENCHMARK_RUNS}
+                  Modelle: {benchmarkQueue.length} · Durchlaeufe: {BENCHMARK_RUNS}
                 </>
               )}
             </div>
 
             {benchmarkResults.length === 0 ? (
               <div className="benchmark-empty">Noch keine Ergebnisse.</div>
+            ) : benchmarkSplit.active.length === 0 ? (
+              <div className="benchmark-empty">
+                Keine Modelle mit mindestens 180 Max-Fruechten.
+              </div>
             ) : (
               <div className="benchmark-table">
                 <div className="benchmark-row benchmark-header">
@@ -1023,7 +1087,7 @@ export default function App() {
                   <span>F Min</span>
                   <span>F Max</span>
                 </div>
-                {benchmarkSorted.map((result) => (
+                {benchmarkSplit.active.map((result) => (
                   <div
                     key={result.strategy}
                     className={`benchmark-row ${
@@ -1046,6 +1110,36 @@ export default function App() {
             {benchmarkBest ? (
               <div className="benchmark-best">
                 Bestes Modell (Ø Punkte): {benchmarkBest.label}
+              </div>
+            ) : null}
+
+            {benchmarkSplit.archived.length > 0 ? (
+              <div className="benchmark-archive">
+                <div className="benchmark-archive-title">Archiv (Max-Fruechte &lt; 180)</div>
+                <div className="benchmark-table">
+                  <div className="benchmark-row benchmark-header">
+                    <span>Modell</span>
+                    <span>P Sum</span>
+                    <span>P Ø</span>
+                    <span>P Min</span>
+                    <span>P Max</span>
+                    <span>F Ø</span>
+                    <span>F Min</span>
+                    <span>F Max</span>
+                  </div>
+                  {benchmarkSplit.archived.map((result) => (
+                    <div key={`arch-${result.strategy}`} className="benchmark-row">
+                      <span className="benchmark-model">{result.label}</span>
+                      <span>{formatWhole(result.scoreTotal)}</span>
+                      <span>{formatAvg(result.scoreSummary.avg)}</span>
+                      <span>{formatWhole(result.scoreSummary.min)}</span>
+                      <span>{formatWhole(result.scoreSummary.max)}</span>
+                      <span>{formatAvg(result.fruitSummary.avg)}</span>
+                      <span>{formatWhole(result.fruitSummary.min)}</span>
+                      <span>{formatWhole(result.fruitSummary.max)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
           </section>
