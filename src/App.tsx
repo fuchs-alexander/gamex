@@ -784,20 +784,29 @@ export default function App() {
 
         <aside className="side">
           <section className="panel">
-            <div className="panel-title">Positionen</div>
+            <div className="panel-title">Bestenliste</div>
             <div className="standings">
               <div className="standings-row standings-header">
-                <span>POS</span>
-                <span>Name</span>
-                <span>R</span>
+                <span></span>
+                <span>Pos</span>
+                <span>Strategie</span>
+                <span>Score</span>
+                <span>Runden</span>
                 <span className="standings-time">Zeit</span>
-                <span className="standings-gap">Diff</span>
+                <span className="standings-gap">Abstand</span>
               </div>
               {standings.map((entry) => (
-                <div key={entry.id} className="standings-row">
-                  <span>{entry.position}</span>
+                <div
+                  key={entry.id}
+                  className={`standings-row${entry.position === 1 ? " standings-leader" : ""}`}
+                >
+                  <span className={`standings-dot ${entry.colorClass}`} />
+                  <span className="standings-pos">{entry.position}</span>
                   <span className={`standings-name ${entry.colorClass}`}>
                     {entry.strategyLabel}
+                  </span>
+                  <span className="standings-score">
+                    {match[entry.id].score}
                   </span>
                   <span>{entry.lap}</span>
                   <span className="standings-time">
