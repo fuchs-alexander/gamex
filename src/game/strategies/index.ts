@@ -15,6 +15,7 @@ import { pickFuchs2Direction } from "./fuchs-2";
 import { pickMartin2Direction } from "./martin2";
 import { pickForge3Direction } from "./forge-3";
 import { pickFuchs3Direction } from "./fuchs-3";
+import { pickForge4Direction } from "./forge-4";
 
 export const STRATEGIES = [
   { id: "balanced", label: "Balanced" },
@@ -32,13 +33,15 @@ export const STRATEGIES = [
   { id: "fuchs-2", label: "Fuchs 2" },
   { id: "martin2", label: "Martin Hulus 2" },
   { id: "forge-3", label: "Forge 3" },
-  { id: "fuchs-3", label: "Fuchs 3" }
+  { id: "fuchs-3", label: "Fuchs 3" },
+  { id: "forge-4", label: "Forge 4" }
 ] as const;
 
 export type AutopilotStrategy = (typeof STRATEGIES)[number]["id"];
 
 export const STRATEGY_DESCRIPTIONS: Partial<Record<AutopilotStrategy, string>> = {
-  "forge-3": "Forge 3 ist Einfach Nur Martin3"
+  "forge-3": "Forge 3 ist Einfach Nur Martin3",
+  "forge-4": "Forge 4 ist Nur Martin 4"
 };
 
 export const STRATEGY_LABELS = STRATEGIES.reduce<Record<AutopilotStrategy, string>>(
@@ -68,7 +71,8 @@ const strategyMap: Record<
   "fuchs-2": pickFuchs2Direction,
   "martin2": pickMartin2Direction,
   "forge-3": pickForge3Direction,
-  "fuchs-3": pickFuchs3Direction
+  "fuchs-3": pickFuchs3Direction,
+  "forge-4": pickForge4Direction
 };
 
 export const pickAutopilotDirection = (

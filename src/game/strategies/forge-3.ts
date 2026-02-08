@@ -1,16 +1,11 @@
 import {
   type Direction,
-  type GameState,
-  type Point,
-  movePoint,
-  pointKey,
-  wrapPoint
+  type GameState
 } from "../snake";
 import {
   directionToTail,
   directions,
   evaluateMove,
-  floodFillCount,
   type MoveEvaluation
 } from "./utils";
 
