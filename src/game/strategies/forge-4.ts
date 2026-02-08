@@ -1,19 +1,126 @@
 import {
   type Direction,
-  type GameState
+  type GameState,
+  type Point,
+  movePoint,
+  wrapPoint,
+  pointKey
 } from "../snake";
 import {
+  bfsPathWithTiming,
+  directionFromStep,
   directionToTail,
   directions,
   evaluateMove,
+  floodFillCount,
+  isFoodReachable,
   type MoveEvaluation
 } from "./utils";
 
 /* ══════════════════════════════════════════════════════
-   Forge 4 — Forge 3 aggressiv + Fuchs 3 adaptiv
-   Phase 1 (0-99):  Forge 3 aggressiv (kuerzester Pfad)
-   Phase 2 (100+):  Fuchs 3 adaptive Gewichte + Dead-End-Filter
+   Forge 4 — MIMO + Eck Mode
+   Phase 1 (0-199):  MIMO Scoring (bewaehrt)
+   Phase 2 (200+):   Eck Mode (Ecken-Navigation) + Aggressives Scoring
    ══════════════════════════════════════════════════════ */
+
+// --- Eck Mode Hilfsfunktionen ---
+
+const isOnBorder = (point: Point, size: number): boolean =>
+  point.x === 0 || point.x === size - 1 || point.y === 0 || point.y === size - 1;
+
+const borderClockwiseDirection = (head: Point, size: number): Direction | null => {
+  if (head.y === 0 && head.x < size - 1) return "right";
+  if (head.x === size - 1 && head.y < size - 1) return "down";
+  if (head.y === size - 1 && head.x > 0) return "left";
+  if (head.x === 0 && head.y > 0) return "up";
+  return null;
+};
+
+const getCorners = (size: number): Point[] => [
+  { x: 0, y: 0 },
+  { x: 0, y: size - 1 },
+  { x: size - 1, y: 0 },
+  { x: size - 1, y: size - 1 }
+];
+
+const isFoodObstructed = (
+  food: Point,
+  size: number,
+  blockedSet: Set<string>
+): boolean => {
+  let blockedNeighbors = 0;
+  for (const dir of directions) {
+    const neighbor = wrapPoint(movePoint(food, dir), size);
+    if (blockedSet.has(pointKey(neighbor))) blockedNeighbors++;
+  }
+  return blockedNeighbors >= 2;
+};
+
+const pickEckModeDirection = (
+  state: GameState,
+  size: number,
+  evaluations: MoveEvaluation[],
+  minSpace: number
+): Direction | null => {
+  const head = state.snake[0];
+  const viable = evaluations.filter((e) => e.space >= minSpace);
+  const pool = viable.length > 0 ? viable : evaluations;
+
+  // Bereits am Rand: clockwise folgen
+  if (isOnBorder(head, size)) {
+    const clockDir = borderClockwiseDirection(head, size);
+    if (clockDir) {
+      const clockEv = pool.find((e) => e.direction === clockDir);
+      if (clockEv && clockEv.space >= minSpace) {
+        return clockDir;
+      }
+    }
+    // Clockwise blockiert: Max-Space
+    let best: MoveEvaluation | null = null;
+    for (const e of pool) {
+      if (!best || e.space > best.space) best = e;
+    }
+    return best?.direction ?? null;
+  }
+
+  // Nicht am Rand: zum naechsten erreichbaren Eckpunkt navigieren
+  const corners = getCorners(size);
+  let bestCornerDir: Direction | null = null;
+  let bestCornerDist = Infinity;
+
+  for (const corner of corners) {
+    const path = bfsPathWithTiming(head, corner, size, state.snake, state.obstacles);
+    if (path && path.length > 1) {
+      const dir = directionFromStep(head, path[1], size);
+      const ev = pool.find((e) => e.direction === dir);
+      if (ev && path.length - 1 < bestCornerDist) {
+        bestCornerDist = path.length - 1;
+        bestCornerDir = dir;
+      }
+    }
+  }
+
+  if (bestCornerDir) return bestCornerDir;
+
+  // BFS zu Ecken gescheitert: Richtung zum naechsten Rand + Platz
+  let bestBorderDir: Direction | null = null;
+  let bestBorderScore = -Infinity;
+
+  for (const ev of pool) {
+    const nextHead = wrapPoint(movePoint(head, ev.direction), size);
+    const distToBorder = Math.min(
+      nextHead.x, size - 1 - nextHead.x,
+      nextHead.y, size - 1 - nextHead.y
+    );
+    const score = -distToBorder + ev.space * 0.01;
+    if (score > bestBorderScore) {
+      bestBorderScore = score;
+      bestBorderDir = ev.direction;
+    }
+  }
+
+  return bestBorderDir;
+};
 
 export const pickForge4Direction = (
   state: GameState,
@@ -36,64 +143,74 @@ export const pickForge4Direction = (
   }
 
   const foodMoves = evaluations.filter((e) => e.pathLength !== null);
-  const safeFoodMoves = foodMoves.filter((e) => e.safe);
   const foodReachable = foodMoves.length > 0;
 
-  // ═══ PHASE 1: Forge 3 Aggressiv (0-99 Fruechte) ═══
-  if (fruitsEaten < 100) {
-    if (foodMoves.length > 0) {
-      const pool = safeFoodMoves.length > 0 ? safeFoodMoves : foodMoves;
+  // ═══ PHASE 1: MIMO Scoring (0-199 Fruechte) ═══
+  if (fruitsEaten < 200) {
+    const foodReachableBfs = isFoodReachable(state, size);
 
-      // Kuerzester Pfad, Space-Tiebreaker, vertikal bevorzugt
-      let best: MoveEvaluation | null = null;
-      for (const e of pool) {
-        if (!best
-          || e.pathLength! < best.pathLength!
-          || (e.pathLength === best.pathLength && e.space > best.space)
-          || (e.pathLength === best.pathLength && e.space === best.space
-              && (e.direction === "up" || e.direction === "down"))
-        ) {
-          best = e;
+    if (!foodReachableBfs) {
+      let bestSpace: MoveEvaluation | null = null;
+      for (const ev of evaluations) {
+        if (!bestSpace || ev.space > bestSpace.space) {
+          bestSpace = ev;
         }
       }
+      return bestSpace?.direction ?? null;
+    }
 
-      // Trap-Schutz: wenn bester Move in Sackgasse fuehrt
-      if (best) {
-        const spaceThreshold = snakeLen < 20 ? snakeLen : snakeLen * 0.5;
-        if (best.space < spaceThreshold && evaluations.some((e) => e.space >= spaceThreshold)) {
-          let safest: MoveEvaluation | null = null;
-          for (const e of evaluations) {
-            if (e.space >= spaceThreshold && (!safest || e.space > safest.space)) {
-              safest = e;
-            }
-          }
-          if (safest) return safest.direction;
-        }
+    let bestScore = -Infinity;
+    let bestDir: Direction | null = null;
+
+    for (const ev of evaluations) {
+      let s = 0;
+      s += (ev.space / (snakeLen * 2)) * 0.4;
+      if (ev.safe) {
+        s += 0.3;
+      } else {
+        s -= Math.max(0.1, 0.3 - (snakeLen / 50));
       }
-
-      return best?.direction ?? directionToTail(state, size);
+      if (ev.pathLength !== null) {
+        s += (1 / (ev.pathLength + 1)) * 0.2;
+      }
+      if (occupiedRatio > 0.5 && !ev.safe) {
+        s -= 0.2;
+      }
+      if (s > bestScore) {
+        bestScore = s;
+        bestDir = ev.direction;
+      }
     }
 
-    // Kein Food erreichbar: Tail-Chase oder Max-Space
-    const tailDir = directionToTail(state, size);
-    if (tailDir && evaluations.some((e) => e.direction === tailDir)) {
-      return tailDir;
+    if (bestDir === null || bestScore < 0) {
+      return directionToTail(state, size);
     }
-    let best: MoveEvaluation | null = null;
-    for (const e of evaluations) {
-      if (!best || e.space > best.space) best = e;
-    }
-    return best?.direction ?? null;
+    return bestDir;
   }
 
-  // ═══ PHASE 2: Fuchs 3 Scoring + Dead-End-Filter (100+ Fruechte) ═══
+  // ═══ PHASE 3: Eck Mode + Aggressives Scoring (200+ Fruechte) ═══
 
-  // Dead-End-Filter (aus Forge 3)
-  const minSpace = Math.max(Math.floor(snakeLen * 0.3), 10);
+  const minSpace = Math.max(Math.floor(snakeLen * 0.2), 8);
   const viable = evaluations.filter((e) => e.space >= minSpace);
   const pool = viable.length > 0 ? viable : evaluations;
 
-  // Kein Futter erreichbar: Tail-Chase oder Max-Space
+  // Eck Mode Aktivierung pruefen
+  const head = state.snake[0];
+  const blockedSet = new Set<string>([
+    ...state.snake.map(pointKey),
+    ...state.obstacles.map(pointKey)
+  ]);
+  const headSpace = floodFillCount(head, size, blockedSet);
+  const lowSpace = headSpace < snakeLen * 0.4;
+  const foodObstructed = isFoodObstructed(state.food, size, blockedSet);
+  const eckModeActive = !foodReachable || (lowSpace && foodObstructed);
+
+  if (eckModeActive) {
+    const eckDir = pickEckModeDirection(state, size, evaluations, minSpace);
+    if (eckDir) return eckDir;
+  }
+
+  // Aggressives Scoring wenn Eck Mode nicht aktiv
   if (!foodReachable) {
     const tailDir = directionToTail(state, size);
     if (tailDir && pool.some((e) => e.direction === tailDir)) {
@@ -106,41 +223,33 @@ export const pickForge4Direction = (
     return best?.direction ?? directionToTail(state, size);
   }
 
-  // Fuchs 3 adaptive Gewichte
-  const t = Math.max(0, Math.min(1, (occupiedRatio - 0.40) / 0.30));
-  const spaceW = 0.40 - 0.12 * t;
-  const foodW = 0.20 + 0.15 * t;
+  const t = Math.max(0, Math.min(1, (occupiedRatio - 0.35) / 0.25));
+  const spaceW = 0.30 - 0.15 * t;
+  const foodW = 0.35 + 0.15 * t;
 
   let bestScore = -Infinity;
   let bestDir: Direction | null = null;
 
   for (const ev of pool) {
     let s = 0;
-
     s += (ev.space / (snakeLen * 2)) * spaceW;
-
     if (ev.safe) {
-      s += 0.3;
+      s += 0.20;
     } else {
-      s -= Math.max(0.1, 0.3 - (snakeLen / 50));
+      s -= Math.max(0.1, 0.20 - (snakeLen / 50));
     }
-
     if (ev.pathLength !== null) {
       s += (1 / (ev.pathLength + 1)) * foodW;
     }
-
     if (occupiedRatio > 0.5 && !ev.safe) {
-      s -= 0.2;
+      s -= 0.10;
     }
-
     if (s > bestScore) {
       bestScore = s;
       bestDir = ev.direction;
     }
   }
 
-  if (bestDir === null || bestScore < 0) {
-    return directionToTail(state, size);
-  }
-  return bestDir;
+  // Kein Score < 0 Abbruch bei 200+ Fruechten — immer Food suchen
+  return bestDir ?? directionToTail(state, size);
 };
