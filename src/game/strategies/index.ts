@@ -42,7 +42,7 @@ export const STRATEGIES = [
 export type AutopilotStrategy = (typeof STRATEGIES)[number]["id"];
 
 export const STRATEGY_DESCRIPTIONS: Partial<Record<AutopilotStrategy, string>> = {
-  "forge-3": "Forge 3 ist Einfach Nur Martin3",
+  "forge-3": "Forge 3: Fuchs 3 Safety + Forge 4 Eck Mode",
   "forge-4": "Forge 4 ist Nur Martin 4"
 };
 

@@ -1,52 +1,125 @@
 import {
   type Direction,
-  type GameState
+  type GameState,
+  type Point,
+  movePoint,
+  wrapPoint,
+  pointKey
 } from "../snake";
 import {
+  bfsPathWithTiming,
+  directionFromStep,
   directionToTail,
   directions,
   evaluateMove,
+  floodFillCount,
+  isFoodReachable,
   type MoveEvaluation
 } from "./utils";
 
 /* ══════════════════════════════════════════════════════
-   Forge 3 — Martin3
+   Forge 3 — Fuchs 3 Safety + Forge 4 Eck Mode
+   Phase 1 (0-199):  Fuchs 3 Adaptive Scoring
+   Phase 2 (200+):   Eck Mode + Fuchs 3 Adaptive Scoring
    ══════════════════════════════════════════════════════ */
 
-// --- MIMO-Style Scoring (ab 100 Fruechte) ---
+// --- Eck Mode Hilfsfunktionen (aus Forge 4) ---
 
-const scoreMimoMove = (
-  evaluation: MoveEvaluation,
-  snakeLength: number,
-  occupiedRatio: number,
-  foodReachable: boolean
-): number => {
-  let score = 0;
+const isOnBorder = (point: Point, size: number): boolean =>
+  point.x === 0 || point.x === size - 1 || point.y === 0 || point.y === size - 1;
 
-  // Space: starkes Signal (40%)
-  const spaceScore = evaluation.space / (snakeLength * 2);
-  score += spaceScore * 0.4;
+const borderClockwiseDirection = (head: Point, size: number): Direction | null => {
+  if (head.y === 0 && head.x < size - 1) return "right";
+  if (head.x === size - 1 && head.y < size - 1) return "down";
+  if (head.y === size - 1 && head.x > 0) return "left";
+  if (head.x === 0 && head.y > 0) return "up";
+  return null;
+};
 
-  // Safety: wichtig (30%)
-  if (evaluation.safe) {
-    score += 0.3;
-  } else {
-    const unsafePenalty = Math.max(0.1, 0.3 - (snakeLength / 50));
-    score -= unsafePenalty;
+const getCorners = (size: number): Point[] => [
+  { x: 0, y: 0 },
+  { x: 0, y: size - 1 },
+  { x: size - 1, y: 0 },
+  { x: size - 1, y: size - 1 }
+];
+
+const isFoodObstructed = (
+  food: Point,
+  size: number,
+  blockedSet: Set<string>
+): boolean => {
+  let blockedNeighbors = 0;
+  for (const dir of directions) {
+    const neighbor = wrapPoint(movePoint(food, dir), size);
+    if (blockedSet.has(pointKey(neighbor))) blockedNeighbors++;
+  }
+  return blockedNeighbors >= 2;
+};
+
+const pickEckModeDirection = (
+  state: GameState,
+  size: number,
+  evaluations: MoveEvaluation[],
+  minSpace: number
+): Direction | null => {
+  const head = state.snake[0];
+  const viable = evaluations.filter((e) => e.space >= minSpace);
+  const pool = viable.length > 0 ? viable : evaluations;
+
+  // Bereits am Rand: clockwise folgen
+  if (isOnBorder(head, size)) {
+    const clockDir = borderClockwiseDirection(head, size);
+    if (clockDir) {
+      const clockEv = pool.find((e) => e.direction === clockDir);
+      if (clockEv && clockEv.space >= minSpace) {
+        return clockDir;
+      }
+    }
+    // Clockwise blockiert: Max-Space
+    let best: MoveEvaluation | null = null;
+    for (const e of pool) {
+      if (!best || e.space > best.space) best = e;
+    }
+    return best?.direction ?? null;
   }
 
-  // Pfad zum Futter (20%)
-  if (foodReachable && evaluation.pathLength !== null) {
-    const pathScore = 1 / (evaluation.pathLength + 1);
-    score += pathScore * 0.2;
+  // Nicht am Rand: zum naechsten erreichbaren Eckpunkt navigieren
+  const corners = getCorners(size);
+  let bestCornerDir: Direction | null = null;
+  let bestCornerDist = Infinity;
+
+  for (const corner of corners) {
+    const path = bfsPathWithTiming(head, corner, size, state.snake, state.obstacles);
+    if (path && path.length > 1) {
+      const dir = directionFromStep(head, path[1], size);
+      const ev = pool.find((e) => e.direction === dir);
+      if (ev && path.length - 1 < bestCornerDist) {
+        bestCornerDist = path.length - 1;
+        bestCornerDir = dir;
+      }
+    }
   }
 
-  // Extra Penalty wenn Board voll und unsafe
-  if (occupiedRatio > 0.5 && !evaluation.safe) {
-    score -= 0.2;
+  if (bestCornerDir) return bestCornerDir;
+
+  // BFS zu Ecken gescheitert: Richtung zum naechsten Rand + Platz
+  let bestBorderDir: Direction | null = null;
+  let bestBorderScore = -Infinity;
+
+  for (const ev of pool) {
+    const nextHead = wrapPoint(movePoint(head, ev.direction), size);
+    const distToBorder = Math.min(
+      nextHead.x, size - 1 - nextHead.x,
+      nextHead.y, size - 1 - nextHead.y
+    );
+    const score = -distToBorder + ev.space * 0.01;
+    if (score > bestBorderScore) {
+      bestBorderScore = score;
+      bestBorderDir = ev.direction;
+    }
   }
 
-  return score;
+  return bestBorderDir;
 };
 
 // --- Hauptfunktion ---
@@ -55,16 +128,16 @@ export const pickForge3Direction = (
   state: GameState,
   size: number
 ): Direction | null => {
-  const snakeLength = state.snake.length;
+  const snakeLen = state.snake.length;
   const fruitsEaten = state.fruitsEaten;
   const totalCells = size * size;
-  const occupiedRatio = (snakeLength + state.obstacles.length) / totalCells;
+  const occupiedRatio = (snakeLen + state.obstacles.length) / totalCells;
 
   // Alle Moves evaluieren
   const evaluations: MoveEvaluation[] = [];
   for (const dir of directions) {
-    const evaluation = evaluateMove(state, size, dir);
-    if (evaluation) evaluations.push(evaluation);
+    const ev = evaluateMove(state, size, dir);
+    if (ev) evaluations.push(ev);
   }
 
   if (evaluations.length === 0) {
@@ -72,98 +145,125 @@ export const pickForge3Direction = (
   }
 
   const foodMoves = evaluations.filter((e) => e.pathLength !== null);
-  const safeFoodMoves = foodMoves.filter((e) => e.safe);
   const foodReachable = foodMoves.length > 0;
 
-  // === PHASE 2: MIMO-Kombi (100+ Fruechte) ===
-  if (fruitsEaten >= 100) {
-    // Dead-End-Filter
-    const minSpace = Math.max(Math.floor(snakeLength * 0.3), 10);
-    const viable = evaluations.filter((e) => e.space >= minSpace);
-    const pool = viable.length > 0 ? viable : evaluations;
+  // ═══ PHASE 1: Fuchs 3 Adaptive Scoring (0-199 Fruechte) ═══
+  if (fruitsEaten < 200) {
+    const foodReachableBfs = isFoodReachable(state, size);
 
-    if (!foodReachable) {
-      // Tail-Chase
-      const tailDir = directionToTail(state, size);
-      if (tailDir && pool.some((e) => e.direction === tailDir)) {
-        return tailDir;
+    if (!foodReachableBfs) {
+      let bestSpace: MoveEvaluation | null = null;
+      for (const ev of evaluations) {
+        if (!bestSpace || ev.space > bestSpace.space) bestSpace = ev;
       }
-      // Max-Space Fallback
-      let best: MoveEvaluation | null = null;
-      for (const e of pool) {
-        if (!best || e.space > best.space) best = e;
-      }
-      return best?.direction ?? directionToTail(state, size);
+      return bestSpace?.direction ?? null;
     }
 
-    // MIMO-Scoring auf gefilterten Pool
+    // Fuchs 3 Safe-Move Pre-Filtering
+    const safeEvals = evaluations.filter((e) => e.safe);
+    const pool = safeEvals.length > 0 ? safeEvals : evaluations;
+
+    // Fuchs 3 Adaptive Gewichte
+    const t = Math.max(0, Math.min(1, (occupiedRatio - 0.50) / 0.25));
+    const spaceW = 0.40 - 0.10 * t;
+    const foodW = 0.20 + 0.12 * t;
+
     let bestScore = -Infinity;
     let bestDir: Direction | null = null;
-    for (const e of pool) {
-      const score = scoreMimoMove(e, snakeLength, occupiedRatio, foodReachable);
-      if (score > bestScore) {
-        bestScore = score;
-        bestDir = e.direction;
+
+    for (const ev of pool) {
+      let s = 0;
+      s += (ev.space / (snakeLen * 2)) * spaceW;
+      if (ev.safe) {
+        s += 0.3;
+      } else {
+        s -= Math.max(0.1, 0.3 - (snakeLen / 50));
+      }
+      if (ev.pathLength !== null) {
+        s += (1 / (ev.pathLength + 1)) * foodW;
+      }
+      if (occupiedRatio > 0.5 && !ev.safe) {
+        s -= 0.2;
+      }
+      if (s > bestScore) {
+        bestScore = s;
+        bestDir = ev.direction;
       }
     }
 
     if (bestDir === null || bestScore < 0) {
       return directionToTail(state, size);
     }
-
     return bestDir;
   }
 
-  // === PHASE 1: Aggressiv (0-99 Fruechte) ===
+  // ═══ PHASE 2: Eck Mode + Fuchs 3 Adaptive Scoring (200+ Fruechte) ═══
 
-  if (foodMoves.length > 0) {
-    // Bevorzuge sichere Moves die Futter erreichen
-    const pool = safeFoodMoves.length > 0 ? safeFoodMoves : foodMoves;
+  const minSpace = Math.max(Math.floor(snakeLen * 0.2), 8);
+  const viable = evaluations.filter((e) => e.space >= minSpace);
+  const pool = viable.length > 0 ? viable : evaluations;
 
-    // Kuerzester Pfad, Space-Tiebreaker, vertikal bevorzugt
+  // Eck Mode Aktivierung pruefen
+  const head = state.snake[0];
+  const blockedSet = new Set<string>([
+    ...state.snake.map(pointKey),
+    ...state.obstacles.map(pointKey)
+  ]);
+  const headSpace = floodFillCount(head, size, blockedSet);
+  const lowSpace = headSpace < snakeLen * 0.4;
+  const foodObstructed = isFoodObstructed(state.food, size, blockedSet);
+  const eckModeActive = !foodReachable || (lowSpace && foodObstructed);
+
+  if (eckModeActive) {
+    const eckDir = pickEckModeDirection(state, size, evaluations, minSpace);
+    if (eckDir) return eckDir;
+  }
+
+  // Fuchs 3 Scoring wenn Eck Mode nicht aktiv
+  if (!foodReachable) {
+    const tailDir = directionToTail(state, size);
+    if (tailDir && pool.some((e) => e.direction === tailDir)) {
+      return tailDir;
+    }
     let best: MoveEvaluation | null = null;
     for (const e of pool) {
-      if (!best
-        || e.pathLength! < best.pathLength!
-        || (e.pathLength === best.pathLength && e.space > best.space)
-        || (e.pathLength === best.pathLength && e.space === best.space
-            && (e.direction === "up" || e.direction === "down"))
-      ) {
-        best = e;
-      }
+      if (!best || e.space > best.space) best = e;
     }
-
-    // Trap-Schutz: wenn bester Move in Sackgasse fuehrt, nimm mehr Space
-    if (best) {
-      const spaceThreshold = snakeLength < 20 ? snakeLength : snakeLength * 0.5;
-      if (best.space < spaceThreshold && evaluations.some((e) => e.space >= spaceThreshold)) {
-        let safest: MoveEvaluation | null = null;
-        for (const e of evaluations) {
-          if (e.space >= spaceThreshold && (!safest || e.space > safest.space)) {
-            safest = e;
-          }
-        }
-        if (safest) return safest.direction;
-      }
-    }
-
     return best?.direction ?? directionToTail(state, size);
   }
 
-  // === SAFETY MODE: Kein Move kann Futter erreichen ===
+  // Fuchs 3 Safe-Move Pre-Filtering auf viable Pool
+  const safePool = pool.filter((e) => e.safe);
+  const scoringPool = safePool.length > 0 ? safePool : pool;
 
-  // 1. Tail-Chase
-  const tailDir = directionToTail(state, size);
-  if (tailDir && evaluations.some((e) => e.direction === tailDir)) {
-    return tailDir;
-  }
+  // Fuchs 3 Adaptive Gewichte
+  const t = Math.max(0, Math.min(1, (occupiedRatio - 0.50) / 0.25));
+  const spaceW = 0.40 - 0.10 * t;
+  const foodW = 0.20 + 0.12 * t;
 
-  // 2. Max-Space
-  let best: MoveEvaluation | null = null;
-  for (const e of evaluations) {
-    if (!best || e.space > best.space) {
-      best = e;
+  let bestScore = -Infinity;
+  let bestDir: Direction | null = null;
+
+  for (const ev of scoringPool) {
+    let s = 0;
+    s += (ev.space / (snakeLen * 2)) * spaceW;
+    if (ev.safe) {
+      s += 0.3;
+    } else {
+      s -= Math.max(0.1, 0.3 - (snakeLen / 50));
+    }
+    if (ev.pathLength !== null) {
+      s += (1 / (ev.pathLength + 1)) * foodW;
+    }
+    if (occupiedRatio > 0.5 && !ev.safe) {
+      s -= 0.2;
+    }
+    if (s > bestScore) {
+      bestScore = s;
+      bestDir = ev.direction;
     }
   }
-  return best?.direction ?? null;
+
+  // Kein Score < 0 Abbruch bei 200+ Fruechten — immer Food suchen
+  return bestDir ?? directionToTail(state, size);
 };
